@@ -84,3 +84,6 @@ Pyth offers a free public endpoint at [https://hermes.pyth.network](https://herm
 recommended to obtain a private endpoint from one of the Hermes RPC providers for more reliability. You can find more
 information about Hermes RPC providers
 [here](https://docs.pyth.network/documentation/pythnet-price-feeds/hermes#public-endpoint).
+
+## References
+- [API](https://hermes.pyth.network/docs/)

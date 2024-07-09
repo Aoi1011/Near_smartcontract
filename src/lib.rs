@@ -1,8 +1,2 @@
-use reqwest::Client;
-
+pub mod price_service_connection;
 pub mod resilient_web_socket;
-
-pub struct PriceServiceConnection {
-    http_client: Client,
-}
-
