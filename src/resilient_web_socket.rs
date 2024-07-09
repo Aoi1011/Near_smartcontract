@@ -4,6 +4,8 @@ use futures_util::{stream::FusedStream, SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 
+const PING_TIMEOUT_DURATION: Duration = Duration::from_secs(33); // 30s + 3s for delays
+
 /// This class wraps websocket to provide a resilient web socket client.
 ///
 /// It will reconnect if connection fails with exponential backoff. Also, in node, it will reconnect
@@ -31,45 +33,110 @@ impl ResilientWebSocket {
         }
     }
 
-    async fn send(&mut self, data: Message) {
+    pub async fn send(&mut self, data: Message) {
         log::info!("Sending {}", data.to_string());
 
         self.wait_for_maybe_ready_websocket().await;
 
-        match self.ws_client {
-            Some(ref mut client) => {
-                let (mut write, _read) = client.split();
-                write.send(data).await.expect("Failed to send message");
+        if let Some(ref mut client) = self.ws_client {
+            let (mut write, _read) = client.split();
+            match write.send(data).await {
+                Ok(_) => {
+                    log::info!("Sent");
+                }
+                Err(e) => {
+                    log::error!("Error sending message: {e}");
+                }
             }
-            None => {
-                log::error!("Couldn't connect to the websocket server. Error callback is called.");
+        } else {
+            log::error!("Couldn't connect to the websocket server. Error callback is called.");
+        }
+    }
+
+    pub async fn start_web_socket(&mut self) {
+        if self.ws_client.is_some() {
+            return;
+        }
+        log::info!("Creating Web Socket client");
+
+        match connect_async(&self.endpoint).await {
+            Ok((ws_stream, _)) => {
+                self.ws_client = Some(ws_stream);
+                self.ws_user_closed = false;
+                self.ws_failed_attempts = 0;
+                self.heartbeat().await;
+            }
+            Err(e) => {
+                log::error!("Websocket connection failed: {e}");
             }
         }
     }
 
-    async fn start_web_socket(&mut self) {
-        if let Some(ref mut client) = self.ws_client {
-            log::info!("Creating Web Socket client");
-
-            let (ws_stream, _) = connect_async(&self.endpoint)
-                .await
-                .expect("Failed to connect");
-            self.ws_user_closed = false;
-        }
-    }
-
-    async fn wait_for_maybe_ready_websocket(&mut self) {
-        let mut waited_time = 0;
+    async fn heartbeat(&mut self) {
+        log::info!("Heartbeat");
 
         if let Some(ref mut client) = self.ws_client {
-            while !client.is_terminated() {
-                if waited_time > 5000 {
-                    client.close(None).await;
-                } else {
-                    waited_time += 10;
-                    tokio::time::sleep(Duration::from_millis(10));
+            let ping_interval = tokio::time::interval(PING_TIMEOUT_DURATION);
+            tokio::pin!(ping_interval);
+
+            loop {
+                ping_interval.as_mut().tick().await;
+
+                if let Err(_) =
+                    tokio::time::timeout(PING_TIMEOUT_DURATION, client.send(Message::Ping(vec![])))
+                        .await
+                {
+                    log::warn!("Connection timed out!. Reconnecting...");
+                    self.restart_unexpected_closed_web_socket().await;
                 }
             }
         }
     }
+
+    async fn wait_for_maybe_ready_websocket(&mut self) {
+        let mut waited_time = Duration::from_millis(0);
+
+        while let Some(ref mut client) = self.ws_client {
+            if !client.is_terminated() {
+                client.close(None).await.unwrap();
+                return;
+            }
+
+            if waited_time > Duration::from_secs(5) {
+                client.close(None).await.unwrap();
+                return;
+            } else {
+                waited_time += Duration::from_millis(10);
+                tokio::time::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+
+    async fn restart_unexpected_closed_web_socket(&mut self) {
+        if self.ws_user_closed {
+            return;
+        }
+
+        self.start_web_socket().await;
+        self.wait_for_maybe_ready_websocket().await;
+
+        if self.ws_client.is_none() {
+            log::error!("Couldn't recennect to websocket");
+        } else {
+            log::info!("Reconnected to websocket.");
+        }
+    }
+
+    pub async fn close_web_socket(&mut self) {
+        if let Some(ref mut client) = self.ws_client {
+            client.close(None).await.unwrap();
+            self.ws_client = None;
+        }
+
+        self.ws_user_closed = true;
+    }
+}
+
+fn expo_backoff(attempts: u32) -> Duration {
+    Duration::from_millis(2_u64.pow(attempts) * 100)
 }
