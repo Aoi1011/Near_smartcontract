@@ -1,6 +1,9 @@
-use std::time::{Duration, Instant};
+use std::{
+    pin::Pin,
+    time::{Duration, Instant},
+};
 
-use futures_util::{stream::FusedStream, SinkExt, StreamExt};
+use futures_util::{stream::FusedStream, Future, SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 
@@ -72,22 +75,25 @@ impl ResilientWebSocket {
         }
     }
 
+    /// Heartbeat is only enabled in node clients because they support handling
+    /// ping-pong events.
+    ///
+    /// This approach only works when server constantly pings the clients which.
+    /// Otherwise you might consider sending ping and acting on pong responses
+    /// yourself.
     async fn heartbeat(&mut self) {
         log::info!("Heartbeat");
+        let mut ping_interval = tokio::time::interval(PING_TIMEOUT_DURATION);
 
-        if let Some(ref mut client) = self.ws_client {
-            let ping_interval = tokio::time::interval(PING_TIMEOUT_DURATION);
-            tokio::pin!(ping_interval);
-
-            loop {
-                ping_interval.as_mut().tick().await;
-
+        loop {
+            ping_interval.tick().await;
+            if let Some(ref mut client) = self.ws_client {
                 if let Err(_) =
                     tokio::time::timeout(PING_TIMEOUT_DURATION, client.send(Message::Ping(vec![])))
                         .await
                 {
                     log::warn!("Connection timed out!. Reconnecting...");
-                    self.restart_unexpected_closed_web_socket().await;
+                    let _ = self.restart_unexpected_closed_web_socket().await;
                 }
             }
         }
@@ -107,24 +113,28 @@ impl ResilientWebSocket {
                 return;
             } else {
                 waited_time += Duration::from_millis(10);
-                tokio::time::sleep(Duration::from_millis(10));
+                let _ = tokio::time::sleep(Duration::from_millis(10));
             }
         }
     }
 
-    async fn restart_unexpected_closed_web_socket(&mut self) {
-        if self.ws_user_closed {
-            return;
-        }
+    async fn restart_unexpected_closed_web_socket<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = ()> + 'a>> {
+        Box::pin(async move {
+            if self.ws_user_closed {
+                return;
+            }
 
-        self.start_web_socket().await;
-        self.wait_for_maybe_ready_websocket().await;
+            self.start_web_socket().await;
+            self.wait_for_maybe_ready_websocket().await;
 
-        if self.ws_client.is_none() {
-            log::error!("Couldn't recennect to websocket");
-        } else {
-            log::info!("Reconnected to websocket.");
-        }
+            if self.ws_client.is_none() {
+                log::error!("Couldn't recennect to websocket");
+            } else {
+                log::info!("Reconnected to websocket.");
+            }
+        })
     }
 
     pub async fn close_web_socket(&mut self) {
