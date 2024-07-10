@@ -6,12 +6,13 @@ use std::{
 use chrono::{DateTime, Timelike, Utc};
 use pyth_sdk::PriceFeed;
 use reqwest::Client;
+use serde::Deserialize;
 
 use crate::resilient_web_socket::ResilientWebSocket;
 
 pub type PriceFeedUpdateCallback = Box<dyn Fn(PriceFeed) + Send + Sync>;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Deserialize)]
 enum Encoding {
     #[default]
     Hex,
@@ -76,10 +77,19 @@ enum ServerResponseStatus {
     Error,
 }
 
+#[derive(Default, Deserialize)]
+struct Binary {
+    encoding: Encoding,
+    data: Vec<String>,
+}
+
+#[derive(Deserialize)]
 struct ServerResponse {
-    r#type: String,
-    status: ServerResponseStatus,
-    error: Option<String>,
+    #[serde(skip_deserializing)]
+    binary: Binary,
+
+    #[serde(skip_deserializing)]
+    parsed: Vec<PriceFeed>,
 }
 
 struct ServerPriceUpdate {
@@ -159,13 +169,15 @@ impl PriceServiceConnection {
         }
 
         let mut params = HashMap::new();
-        params.insert("ids", price_ids.join(","));
-        params.insert(
-            "encoding",
-            self.price_feed_request_config.encoding.to_string(),
-        );
-        params.insert("parsed", self.price_feed_request_config.parsed.to_string());
+        params.insert("ids[]", price_ids.join(","));
+        // params.insert(
+        //     "encoding",
+        //     self.price_feed_request_config.encoding.to_string(),
+        // );
+        // params.insert("parsed", self.price_feed_request_config.parsed.to_string());
 
+        params.insert("verbose", true.to_string());
+        params.insert("binary", true.to_string());
         let url = format!("{}/api/latest_price_feeds", self.ws_endpoint);
         let response = self
             .http_client
@@ -175,12 +187,20 @@ impl PriceServiceConnection {
             .await
             .expect("Send request");
 
-        let price_feed_json = response
-            .json::<Vec<PriceFeed>>()
-            .await
-            .expect("deserializing");
+        println!("{:?}", response.url());
+        println!("{:?}", response.text().await);
 
-        price_feed_json
+        todo!()
+
+        // match response.json::<ServerResponse>().await {
+        //     Ok(response) => {
+        //         return response.parsed;
+        //     }
+        //     Err(e) => {
+        //         println!("Failed to deserialize: {e}");
+        //         vec![]
+        //     }
+        // }
     }
 
     /// Fetch latest VAA of given price ids.
