@@ -140,6 +140,7 @@ impl PriceServiceConnection {
             None => true,
         };
         params.insert("verbose", verbose.to_string());
+
         let binary = match self.price_feed_request_config.binary {
             Some(binary) => binary,
             None => true,
@@ -158,7 +159,23 @@ impl PriceServiceConnection {
     /// This will throw an axios error if there is a network problem or the price service returns a non-ok response (e.g: Invalid price ids)
     ///
     /// This function is coupled to wormhole implemntation.
-    pub async fn get_latest_vass(price_ids: &[&str]) {}
+    pub async fn get_latest_vass(&self, price_ids: &[&str]) -> Result<Vec<String>, reqwest::Error> {
+        if price_ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut params = HashMap::new();
+        for price_id in price_ids {
+            params.insert("ids[]", price_id.to_string());
+        }
+
+        let url = format!("{}/api/latest_vaas", self.ws_endpoint);
+        let response = self.http_client.get(url).query(&params).send().await?;
+
+        let vaas = response.json::<Vec<String>>().await?;
+
+        Ok(vaas)
+    }
 
     /// Fetch the earliest VAA of the given price id that is published since the given publish time.
     /// This will throw an error if the given publish time is in the future, or if the publish time
