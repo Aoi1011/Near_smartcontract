@@ -234,12 +234,24 @@ impl PriceServiceConnection {
     /// This will throw an axios error if there is a network problem or the price service returns a non-ok response (e.g: Invalid price id)
     pub async fn get_price_feed(
         &self,
-        price_ids: &[&str],
+        price_id: &str,
         publish_time: DateTime<Utc>,
-    ) -> Vec<PriceFeed> {
+    ) -> Result<PriceFeed, String> {
         let mut params = HashMap::new();
-        params.insert("ids", price_ids.join(","));
+        params.insert("id", price_id.to_string());
         params.insert("publish_time", publish_time.second().to_string());
+
+        let verbose = match self.price_feed_request_config.verbose {
+            Some(verbose) => verbose,
+            None => true,
+        };
+        params.insert("verbose", verbose.to_string());
+
+        let binary = match self.price_feed_request_config.binary {
+            Some(binary) => binary,
+            None => true,
+        };
+        params.insert("binary", binary.to_string());
 
         let url = format!("{}/api/get_price_feed", self.ws_endpoint);
         let response = self
@@ -248,14 +260,24 @@ impl PriceServiceConnection {
             .query(&params)
             .send()
             .await
-            .expect("Send request");
+            .map_err(|e| e.to_string())?;
 
-        let price_feed_json = response
-            .json::<Vec<PriceFeed>>()
-            .await
-            .expect("deserializing");
+        match response.status() {
+            StatusCode::OK => {
+                let price_feed_json = response
+                    .json::<PriceFeed>()
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(price_feed_json)
+            }
+            status => {
+                let err_str = response.json::<String>().await.map_err(|e| {
+                    format!("Error status: {status}, Error message: {}", e.to_string())
+                })?;
 
-        price_feed_json
+                Err(err_str)
+            }
+        }
     }
 
     /// Fetch the list of available price feed ids.

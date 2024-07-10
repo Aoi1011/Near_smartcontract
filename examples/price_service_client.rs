@@ -27,7 +27,15 @@ async fn main() {
             "e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43",
             DateTime::from_timestamp_nanos(1690576641),
         )
-        .await
-        .expect("get vaa");
+        .await;
     println!("VAAs: {vaa:?}");
+
+    let price_feed = connection
+        .get_price_feed(
+            "e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43",
+            DateTime::from_timestamp_nanos(1717632000),
+        )
+        .await
+        .expect("get price feed");
+    println!("Price feed: {price_feed:?}");
 }
