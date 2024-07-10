@@ -1,3 +1,4 @@
+use chrono::DateTime;
 use price_service_client::price_service_connection::{
     PriceServiceConnection, PriceServiceConnectionConfig,
 };
@@ -20,4 +21,13 @@ async fn main() {
         .await
         .expect("get latest vaas");
     println!("VAAs: {vaas:?}");
+
+    let vaa = connection
+        .get_vaa(
+            "e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43",
+            DateTime::from_timestamp_nanos(1690576641),
+        )
+        .await
+        .expect("get vaa");
+    println!("VAAs: {vaa:?}");
 }

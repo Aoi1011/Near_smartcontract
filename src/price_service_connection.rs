@@ -5,7 +5,8 @@ use std::{
 
 use chrono::{DateTime, Timelike, Utc};
 use pyth_sdk::PriceFeed;
-use reqwest::Client;
+use reqwest::{Client, StatusCode};
+use serde::Deserialize;
 
 use crate::resilient_web_socket::ResilientWebSocket;
 
@@ -73,6 +74,13 @@ struct ServerPriceUpdate {
 enum ServerMessage {
     ServerResponse,
     ServerPriceUpdate,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct VaaResponse {
+    #[serde(rename = "publishTime")]
+    publish_time: u64,
+    vaa: String,
 }
 
 pub struct PriceServiceConnection {
@@ -183,9 +191,13 @@ impl PriceServiceConnection {
     /// This will throw an axios error if there is a network problem or the price service returns a non-ok response (e.g: Invalid price id)
     ///
     /// This function is coupled to wormhole implemntation.
-    pub async fn get_vaa(&self, price_ids: &[&str], publish_time: DateTime<Utc>) -> Vec<PriceFeed> {
+    pub async fn get_vaa(
+        &self,
+        price_id: &str,
+        publish_time: DateTime<Utc>,
+    ) -> Result<VaaResponse, String> {
         let mut params = HashMap::new();
-        params.insert("ids", price_ids.join(","));
+        params.insert("id", price_id.to_string());
         params.insert("publish_time", publish_time.second().to_string());
 
         let url = format!("{}/api/get_vaa", self.ws_endpoint);
@@ -195,14 +207,25 @@ impl PriceServiceConnection {
             .query(&params)
             .send()
             .await
-            .expect("Send request");
+            .map_err(|e| e.to_string())?;
 
-        let price_feed_json = response
-            .json::<Vec<PriceFeed>>()
-            .await
-            .expect("deserializing");
+        match response.status() {
+            StatusCode::OK => {
+                let vaa = response
+                    .json::<VaaResponse>()
+                    .await
+                    .map_err(|e| e.to_string())?;
 
-        price_feed_json
+                Ok(vaa)
+            }
+            status => {
+                let err_str = response.json::<String>().await.map_err(|e| {
+                    format!("Error status: {status}, Error message: {}", e.to_string())
+                })?;
+
+                Err(err_str)
+            }
+        }
     }
 
     /// Fetch the PriceFeed of the given price id that is published since the given publish time.
