@@ -130,14 +130,16 @@ impl PriceServiceConnection {
 
         let mut params = HashMap::new();
         params.insert("ids", price_ids.join(","));
-        params.insert(
-            "verbose",
-            self.price_feed_request_config.verbose.unwrap().to_string(),
-        );
-        params.insert(
-            "binary",
-            self.price_feed_request_config.binary.unwrap().to_string(),
-        );
+        let verbose = match self.price_feed_request_config.verbose {
+            Some(verbose) => verbose.to_string(),
+            None => "".to_string(),
+        };
+        params.insert("verbose", verbose);
+        let binary = match self.price_feed_request_config.binary {
+            Some(binary) => binary.to_string(),
+            None => "".to_string(),
+        };
+        params.insert("binary", binary);
 
         let url = format!("{}/api/latest_price_feeds", self.ws_endpoint);
         let response = self
