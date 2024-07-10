@@ -6,39 +6,21 @@ use std::{
 use chrono::{DateTime, Timelike, Utc};
 use pyth_sdk::PriceFeed;
 use reqwest::Client;
-use serde::Deserialize;
 
 use crate::resilient_web_socket::ResilientWebSocket;
 
 pub type PriceFeedUpdateCallback = Box<dyn Fn(PriceFeed) + Send + Sync>;
 
-#[derive(Debug, Default, Deserialize)]
-enum Encoding {
-    #[default]
-    Hex,
-
-    Base64,
-}
-
-impl ToString for Encoding {
-    fn to_string(&self) -> String {
-        match self {
-            Encoding::Hex => String::from("hex"),
-            Encoding::Base64 => String::from("base64"),
-        }
-    }
-}
-
 #[derive(Debug, Default)]
 pub struct PriceFeedRequestConfig {
-    /// Optional encoding type.
-    /// If true, return the price update in the encoding specified by the encoding parameter.
-    /// Default is hex
-    encoding: Encoding,
+    /// Optional verbose to request for verbose information from the service
+    verbose: Option<bool>,
 
-    /// If true, include the parsed price update in the parsed field of each returned feed.
-    /// Default is true
-    parsed: bool,
+    /// Optional binary to include the price feeds binary update data
+    binary: Option<bool>,
+
+    /// Optional config for the websocket subscription to receive out of order updates
+    allow_out_of_order: Option<bool>,
 }
 
 #[derive(Debug, Default)]
@@ -77,19 +59,10 @@ enum ServerResponseStatus {
     Error,
 }
 
-#[derive(Default, Deserialize)]
-struct Binary {
-    encoding: Encoding,
-    data: Vec<String>,
-}
-
-#[derive(Deserialize)]
 struct ServerResponse {
-    #[serde(skip_deserializing)]
-    binary: Binary,
-
-    #[serde(skip_deserializing)]
-    parsed: Vec<PriceFeed>,
+    r#type: String,
+    status: ServerResponseStatus,
+    error: Option<String>,
 }
 
 struct ServerPriceUpdate {
@@ -112,41 +85,32 @@ pub struct PriceServiceConnection {
 
 impl PriceServiceConnection {
     pub fn new(endpoint: &str, config: Option<PriceServiceConnectionConfig>) -> Self {
-        let default = PriceFeedRequestConfig {
-            encoding: Encoding::default(),
-            parsed: true,
-        };
+        let price_feed_request_config = if let Some(price_service_config) = config {
+            if let Some(config) = price_service_config.price_feed_request_config {
+                let verbose = match config.verbose {
+                    Some(config_verbose) => Some(config_verbose),
+                    None => price_service_config.verbose,
+                };
 
-        let price_feed_request_config = if let Some(config) = config {
-            config.price_feed_request_config.unwrap_or(default)
+                PriceFeedRequestConfig {
+                    binary: config.binary,
+                    verbose,
+                    allow_out_of_order: config.allow_out_of_order,
+                }
+            } else {
+                PriceFeedRequestConfig {
+                    binary: None,
+                    verbose: price_service_config.verbose,
+                    allow_out_of_order: None,
+                }
+            }
         } else {
-            default
+            PriceFeedRequestConfig {
+                binary: None,
+                verbose: None,
+                allow_out_of_order: None,
+            }
         };
-        // let price_feed_request_config = if let Some(price_service_config) = config {
-        //     if let Some(config) = price_service_config.price_feed_request_config {
-        //         let verbose = match config.verbose {
-        //             Some(config_verbose) => Some(config_verbose),
-        //             None => price_service_config.verbose,
-        //         };
-
-        //         PriceFeedRequestConfig {
-        //             binary: config.binary,
-        //             verbose,
-        //             allow_out_of_order: config.allow_out_of_order,
-        //         }
-        //     } else {
-        //         PriceFeedRequestConfig {
-        //             binary: None,
-        //             verbose: price_service_config.verbose,
-        //             allow_out_of_order: None,
-        //         }
-        //     }
-        // } else {
-        //     PriceFeedRequestConfig {
-        //         encoding: None,
-        //         parsed: None,
-        //     }
-        // };
 
         Self {
             http_client: Client::new(),
@@ -157,10 +121,6 @@ impl PriceServiceConnection {
         }
     }
 
-    /// Get the latest price updates by price feed id.
-    ///
-    /// Given a collection of price feed ids, retrieve the latest Pyth price for each price feed.
-    ///
     /// Fetch Latest PriceFeeds of given price ids.
     /// This will throw an axios error if there is a network problem or the price service returns a non-ok response (e.g: Invalid price ids)
     pub async fn get_latest_price_feeds(&self, price_ids: &[&str]) -> Vec<PriceFeed> {
@@ -169,15 +129,20 @@ impl PriceServiceConnection {
         }
 
         let mut params = HashMap::new();
-        params.insert("ids[]", price_ids.join(","));
-        // params.insert(
-        //     "encoding",
-        //     self.price_feed_request_config.encoding.to_string(),
-        // );
-        // params.insert("parsed", self.price_feed_request_config.parsed.to_string());
+        for price_id in price_ids {
+            params.insert("ids[]", price_id.to_string());
+        }
+        let verbose = match self.price_feed_request_config.verbose {
+            Some(verbose) => verbose,
+            None => true,
+        };
+        params.insert("verbose", verbose.to_string());
+        let binary = match self.price_feed_request_config.binary {
+            Some(binary) => binary,
+            None => true,
+        };
+        params.insert("binary", binary.to_string());
 
-        params.insert("verbose", true.to_string());
-        params.insert("binary", true.to_string());
         let url = format!("{}/api/latest_price_feeds", self.ws_endpoint);
         let response = self
             .http_client
@@ -187,20 +152,12 @@ impl PriceServiceConnection {
             .await
             .expect("Send request");
 
-        println!("{:?}", response.url());
-        println!("{:?}", response.text().await);
+        let price_feed_json = response
+            .json::<Vec<PriceFeed>>()
+            .await
+            .expect("deserializing");
 
-        todo!()
-
-        // match response.json::<ServerResponse>().await {
-        //     Ok(response) => {
-        //         return response.parsed;
-        //     }
-        //     Err(e) => {
-        //         println!("Failed to deserialize: {e}");
-        //         vec![]
-        //     }
-        // }
+        price_feed_json
     }
 
     /// Fetch latest VAA of given price ids.
