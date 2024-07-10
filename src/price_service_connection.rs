@@ -12,15 +12,32 @@ use crate::resilient_web_socket::ResilientWebSocket;
 pub type PriceFeedUpdateCallback = Box<dyn Fn(PriceFeed) + Send + Sync>;
 
 #[derive(Debug, Default)]
+enum Encoding {
+    #[default]
+    Hex,
+
+    Base64,
+}
+
+impl ToString for Encoding {
+    fn to_string(&self) -> String {
+        match self {
+            Encoding::Hex => String::from("hex"),
+            Encoding::Base64 => String::from("base64"),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
 pub struct PriceFeedRequestConfig {
-    /// Optional verbose to request for verbose information from the service
-    verbose: Option<bool>,
+    /// Optional encoding type.
+    /// If true, return the price update in the encoding specified by the encoding parameter.
+    /// Default is hex
+    encoding: Encoding,
 
-    /// Optional binary to include the price feeds binary update data
-    binary: Option<bool>,
-
-    /// Optional config for the websocket subscription to receive out of order updates
-    allow_out_of_order: Option<bool>,
+    /// If true, include the parsed price update in the parsed field of each returned feed.
+    /// Default is true
+    parsed: bool,
 }
 
 #[derive(Debug, Default)]
@@ -85,32 +102,41 @@ pub struct PriceServiceConnection {
 
 impl PriceServiceConnection {
     pub fn new(endpoint: &str, config: Option<PriceServiceConnectionConfig>) -> Self {
-        let price_feed_request_config = if let Some(price_service_config) = config {
-            if let Some(config) = price_service_config.price_feed_request_config {
-                let verbose = match config.verbose {
-                    Some(config_verbose) => Some(config_verbose),
-                    None => price_service_config.verbose,
-                };
-
-                PriceFeedRequestConfig {
-                    binary: config.binary,
-                    verbose,
-                    allow_out_of_order: config.allow_out_of_order,
-                }
-            } else {
-                PriceFeedRequestConfig {
-                    binary: None,
-                    verbose: price_service_config.verbose,
-                    allow_out_of_order: None,
-                }
-            }
-        } else {
-            PriceFeedRequestConfig {
-                binary: None,
-                verbose: None,
-                allow_out_of_order: None,
-            }
+        let default = PriceFeedRequestConfig {
+            encoding: Encoding::default(),
+            parsed: true,
         };
+
+        let price_feed_request_config = if let Some(config) = config {
+            config.price_feed_request_config.unwrap_or(default)
+        } else {
+            default
+        };
+        // let price_feed_request_config = if let Some(price_service_config) = config {
+        //     if let Some(config) = price_service_config.price_feed_request_config {
+        //         let verbose = match config.verbose {
+        //             Some(config_verbose) => Some(config_verbose),
+        //             None => price_service_config.verbose,
+        //         };
+
+        //         PriceFeedRequestConfig {
+        //             binary: config.binary,
+        //             verbose,
+        //             allow_out_of_order: config.allow_out_of_order,
+        //         }
+        //     } else {
+        //         PriceFeedRequestConfig {
+        //             binary: None,
+        //             verbose: price_service_config.verbose,
+        //             allow_out_of_order: None,
+        //         }
+        //     }
+        // } else {
+        //     PriceFeedRequestConfig {
+        //         encoding: None,
+        //         parsed: None,
+        //     }
+        // };
 
         Self {
             http_client: Client::new(),
@@ -121,6 +147,10 @@ impl PriceServiceConnection {
         }
     }
 
+    /// Get the latest price updates by price feed id.
+    ///
+    /// Given a collection of price feed ids, retrieve the latest Pyth price for each price feed.
+    ///
     /// Fetch Latest PriceFeeds of given price ids.
     /// This will throw an axios error if there is a network problem or the price service returns a non-ok response (e.g: Invalid price ids)
     pub async fn get_latest_price_feeds(&self, price_ids: &[&str]) -> Vec<PriceFeed> {
@@ -130,16 +160,11 @@ impl PriceServiceConnection {
 
         let mut params = HashMap::new();
         params.insert("ids", price_ids.join(","));
-        let verbose = match self.price_feed_request_config.verbose {
-            Some(verbose) => verbose.to_string(),
-            None => "".to_string(),
-        };
-        params.insert("verbose", verbose);
-        let binary = match self.price_feed_request_config.binary {
-            Some(binary) => binary.to_string(),
-            None => "".to_string(),
-        };
-        params.insert("binary", binary);
+        params.insert(
+            "encoding",
+            self.price_feed_request_config.encoding.to_string(),
+        );
+        params.insert("parsed", self.price_feed_request_config.parsed.to_string());
 
         let url = format!("{}/api/latest_price_feeds", self.ws_endpoint);
         let response = self
