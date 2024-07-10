@@ -11,6 +11,7 @@ use crate::resilient_web_socket::ResilientWebSocket;
 
 pub type PriceFeedUpdateCallback = Box<dyn Fn(PriceFeed) + Send + Sync>;
 
+#[derive(Debug, Default)]
 pub struct PriceFeedRequestConfig {
     /// Optional verbose to request for verbose information from the service
     verbose: Option<bool>,
@@ -22,6 +23,7 @@ pub struct PriceFeedRequestConfig {
     allow_out_of_order: Option<bool>,
 }
 
+#[derive(Debug, Default)]
 pub struct PriceServiceConnectionConfig {
     /// Timeout of each request (for all of retries). Default: 5000ms
     timeout: Option<Duration>,
@@ -247,6 +249,6 @@ impl PriceServiceConnection {
     }
 
     pub async fn subscribe_price_feed_updates(&self, price_ids: &[&str], cb: String) {
-        if self.ws_client
+        // if self.ws_client
     }
 }
