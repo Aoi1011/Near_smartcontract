@@ -123,9 +123,12 @@ impl PriceServiceConnection {
 
     /// Fetch Latest PriceFeeds of given price ids.
     /// This will throw an axios error if there is a network problem or the price service returns a non-ok response (e.g: Invalid price ids)
-    pub async fn get_latest_price_feeds(&self, price_ids: &[&str]) -> Vec<PriceFeed> {
+    pub async fn get_latest_price_feeds(
+        &self,
+        price_ids: &[&str],
+    ) -> Result<Vec<PriceFeed>, reqwest::Error> {
         if price_ids.is_empty() {
-            return vec![];
+            return Ok(vec![]);
         }
 
         let mut params = HashMap::new();
@@ -144,20 +147,11 @@ impl PriceServiceConnection {
         params.insert("binary", binary.to_string());
 
         let url = format!("{}/api/latest_price_feeds", self.ws_endpoint);
-        let response = self
-            .http_client
-            .get(url)
-            .query(&params)
-            .send()
-            .await
-            .expect("Send request");
+        let response = self.http_client.get(url).query(&params).send().await?;
 
-        let price_feed_json = response
-            .json::<Vec<PriceFeed>>()
-            .await
-            .expect("deserializing");
+        let price_feed_json = response.json::<Vec<PriceFeed>>().await?;
 
-        price_feed_json
+        Ok(price_feed_json)
     }
 
     /// Fetch latest VAA of given price ids.
