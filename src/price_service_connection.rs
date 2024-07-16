@@ -1,15 +1,12 @@
-use std::{
-    collections::{HashMap, HashSet},
-    time::Duration,
-};
+use std::{collections::HashMap, time::Duration};
 
 use chrono::{DateTime, Timelike, Utc};
 use pyth_sdk::PriceFeed;
-use reqwest::Client;
+use reqwest::{Client, StatusCode};
+use serde::{Deserialize, Serialize};
+use tokio_tungstenite::tungstenite::Message;
 
 use crate::resilient_web_socket::ResilientWebSocket;
-
-pub type PriceFeedUpdateCallback = Box<dyn Fn(PriceFeed) + Send + Sync>;
 
 #[derive(Debug, Default)]
 pub struct PriceFeedRequestConfig {
@@ -41,11 +38,13 @@ pub struct PriceServiceConnectionConfig {
     price_feed_request_config: Option<PriceFeedRequestConfig>,
 }
 
+#[derive(Serialize)]
 enum ClientMessageType {
     Subscribe,
     Unsubscribe,
 }
 
+#[derive(Serialize)]
 struct ClientMessage {
     r#type: ClientMessageType,
     ids: Vec<String>,
@@ -75,15 +74,28 @@ enum ServerMessage {
     ServerPriceUpdate,
 }
 
-pub struct PriceServiceConnection {
+#[derive(Debug, Deserialize)]
+pub struct VaaResponse {
+    #[serde(rename = "publishTime")]
+    publish_time: u64,
+    vaa: String,
+}
+
+pub struct PriceServiceConnection<F>
+where
+    F: FnMut(PriceFeed) + Send + Sync + Clone,
+{
     http_client: Client,
-    price_feed_callbacks: HashMap<String, HashSet<PriceFeedUpdateCallback>>,
+    price_feed_callbacks: HashMap<String, Vec<F>>,
     ws_client: Option<ResilientWebSocket>,
     ws_endpoint: String,
     price_feed_request_config: PriceFeedRequestConfig,
 }
 
-impl PriceServiceConnection {
+impl<F> PriceServiceConnection<F>
+where
+    F: FnMut(PriceFeed) + Send + Sync + Clone,
+{
     pub fn new(endpoint: &str, config: Option<PriceServiceConnectionConfig>) -> Self {
         let price_feed_request_config = if let Some(price_service_config) = config {
             if let Some(config) = price_service_config.price_feed_request_config {
@@ -123,44 +135,59 @@ impl PriceServiceConnection {
 
     /// Fetch Latest PriceFeeds of given price ids.
     /// This will throw an axios error if there is a network problem or the price service returns a non-ok response (e.g: Invalid price ids)
-    pub async fn get_latest_price_feeds(&self, price_ids: &[&str]) -> Vec<PriceFeed> {
+    pub async fn get_latest_price_feeds(
+        &self,
+        price_ids: &[&str],
+    ) -> Result<Vec<PriceFeed>, reqwest::Error> {
         if price_ids.is_empty() {
-            return vec![];
+            return Ok(vec![]);
         }
 
         let mut params = HashMap::new();
-        params.insert("ids", price_ids.join(","));
-        params.insert(
-            "verbose",
-            self.price_feed_request_config.verbose.unwrap().to_string(),
-        );
-        params.insert(
-            "binary",
-            self.price_feed_request_config.binary.unwrap().to_string(),
-        );
+        for price_id in price_ids {
+            params.insert("ids[]", price_id.to_string());
+        }
+        let verbose = match self.price_feed_request_config.verbose {
+            Some(verbose) => verbose,
+            None => true,
+        };
+        params.insert("verbose", verbose.to_string());
+
+        let binary = match self.price_feed_request_config.binary {
+            Some(binary) => binary,
+            None => true,
+        };
+        params.insert("binary", binary.to_string());
 
         let url = format!("{}/api/latest_price_feeds", self.ws_endpoint);
-        let response = self
-            .http_client
-            .get(url)
-            .query(&params)
-            .send()
-            .await
-            .expect("Send request");
+        let response = self.http_client.get(url).query(&params).send().await?;
 
-        let price_feed_json = response
-            .json::<Vec<PriceFeed>>()
-            .await
-            .expect("deserializing");
+        let price_feed_json = response.json::<Vec<PriceFeed>>().await?;
 
-        price_feed_json
+        Ok(price_feed_json)
     }
 
     /// Fetch latest VAA of given price ids.
     /// This will throw an axios error if there is a network problem or the price service returns a non-ok response (e.g: Invalid price ids)
     ///
     /// This function is coupled to wormhole implemntation.
-    pub async fn get_latest_vass(price_ids: &[&str]) {}
+    pub async fn get_latest_vass(&self, price_ids: &[&str]) -> Result<Vec<String>, reqwest::Error> {
+        if price_ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut params = HashMap::new();
+        for price_id in price_ids {
+            params.insert("ids[]", price_id.to_string());
+        }
+
+        let url = format!("{}/api/latest_vaas", self.ws_endpoint);
+        let response = self.http_client.get(url).query(&params).send().await?;
+
+        let vaas = response.json::<Vec<String>>().await?;
+
+        Ok(vaas)
+    }
 
     /// Fetch the earliest VAA of the given price id that is published since the given publish time.
     /// This will throw an error if the given publish time is in the future, or if the publish time
@@ -168,9 +195,13 @@ impl PriceServiceConnection {
     /// This will throw an axios error if there is a network problem or the price service returns a non-ok response (e.g: Invalid price id)
     ///
     /// This function is coupled to wormhole implemntation.
-    pub async fn get_vaa(&self, price_ids: &[&str], publish_time: DateTime<Utc>) -> Vec<PriceFeed> {
+    pub async fn get_vaa(
+        &self,
+        price_id: &str,
+        publish_time: DateTime<Utc>,
+    ) -> Result<VaaResponse, String> {
         let mut params = HashMap::new();
-        params.insert("ids", price_ids.join(","));
+        params.insert("id", price_id.to_string());
         params.insert("publish_time", publish_time.second().to_string());
 
         let url = format!("{}/api/get_vaa", self.ws_endpoint);
@@ -180,14 +211,25 @@ impl PriceServiceConnection {
             .query(&params)
             .send()
             .await
-            .expect("Send request");
+            .map_err(|e| e.to_string())?;
 
-        let price_feed_json = response
-            .json::<Vec<PriceFeed>>()
-            .await
-            .expect("deserializing");
+        match response.status() {
+            StatusCode::OK => {
+                let vaa = response
+                    .json::<VaaResponse>()
+                    .await
+                    .map_err(|e| e.to_string())?;
 
-        price_feed_json
+                Ok(vaa)
+            }
+            status => {
+                let err_str = response.json::<String>().await.map_err(|e| {
+                    format!("Error status: {status}, Error message: {}", e.to_string())
+                })?;
+
+                Err(err_str)
+            }
+        }
     }
 
     /// Fetch the PriceFeed of the given price id that is published since the given publish time.
@@ -196,12 +238,24 @@ impl PriceServiceConnection {
     /// This will throw an axios error if there is a network problem or the price service returns a non-ok response (e.g: Invalid price id)
     pub async fn get_price_feed(
         &self,
-        price_ids: &[&str],
+        price_id: &str,
         publish_time: DateTime<Utc>,
-    ) -> Vec<PriceFeed> {
+    ) -> Result<PriceFeed, String> {
         let mut params = HashMap::new();
-        params.insert("ids", price_ids.join(","));
+        params.insert("id", price_id.to_string());
         params.insert("publish_time", publish_time.second().to_string());
+
+        let verbose = match self.price_feed_request_config.verbose {
+            Some(verbose) => verbose,
+            None => true,
+        };
+        params.insert("verbose", verbose.to_string());
+
+        let binary = match self.price_feed_request_config.binary {
+            Some(binary) => binary,
+            None => true,
+        };
+        params.insert("binary", binary.to_string());
 
         let url = format!("{}/api/get_price_feed", self.ws_endpoint);
         let response = self
@@ -210,14 +264,24 @@ impl PriceServiceConnection {
             .query(&params)
             .send()
             .await
-            .expect("Send request");
+            .map_err(|e| e.to_string())?;
 
-        let price_feed_json = response
-            .json::<Vec<PriceFeed>>()
-            .await
-            .expect("deserializing");
+        match response.status() {
+            StatusCode::OK => {
+                let price_feed_json = response
+                    .json::<PriceFeed>()
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(price_feed_json)
+            }
+            status => {
+                let err_str = response.json::<String>().await.map_err(|e| {
+                    format!("Error status: {status}, Error message: {}", e.to_string())
+                })?;
 
-        price_feed_json
+                Err(err_str)
+            }
+        }
     }
 
     /// Fetch the list of available price feed ids.
@@ -248,7 +312,79 @@ impl PriceServiceConnection {
         price_feed_json
     }
 
-    pub async fn subscribe_price_feed_updates(&self, price_ids: &[&str], cb: String) {
-        // if self.ws_client
+    ///
+    /// Unsubscribe from updates for given price ids.
+    ///
+    /// It will close the websocket connection if it's not subscribed to any price feed updates anymore.
+    /// Also, it won't throw any exception if given price ids are invalid or connection errors. Instead,
+    /// it calls `connection.onWsError`. If you want to handle the errors you should set the
+    /// `onWsError` function to your custom error handler.
+    pub async fn subscribe_price_feed_updates(&mut self, price_ids: &[&str], cb: F) {
+        if self.ws_client.is_none() {
+            self.start_web_socket().await;
+        }
+
+        let price_ids: Vec<&str> = price_ids
+            .iter()
+            .map(|price_id| {
+                if price_id.starts_with("0x") {
+                    &price_id[2..]
+                } else {
+                    price_id
+                }
+            })
+            .collect();
+
+        let mut new_price_ids = Vec::new();
+
+        for id in price_ids {
+            if !self.price_feed_callbacks.contains_key(id) {
+                self.price_feed_callbacks.insert(id.to_string(), Vec::new());
+                new_price_ids.push(id.to_string());
+            }
+
+            let price_feed_callbacks = self.price_feed_callbacks.get_mut(id).unwrap();
+            price_feed_callbacks.push(cb.clone());
+        }
+
+        let message = ClientMessage {
+            ids: new_price_ids,
+            r#type: ClientMessageType::Subscribe,
+            verbose: self.price_feed_request_config.verbose,
+            binary: self.price_feed_request_config.binary,
+            allow_out_of_order: self.price_feed_request_config.allow_out_of_order,
+        };
+
+        if let Some(ref mut ws_client) = self.ws_client {
+            ws_client
+                .send(Message::Text(serde_json::to_string(&message).unwrap()))
+                .await;
+        }
+    }
+
+    ///
+    /// Starts connection websocket.
+    ///
+    /// This function is called automatically upon subscribing to price feed updates.
+    pub async fn start_web_socket(&mut self) {
+        let mut web_socket = ResilientWebSocket::new(&self.ws_endpoint);
+        web_socket.start_web_socket().await;
+
+        self.ws_client = Some(web_socket);
+    }
+
+    ///
+    /// Closes connection websocket.
+    ///
+    /// At termination, the websocket should be closed to finish the
+    /// process elegantly. It will automatically close when the connection
+    /// is subscribed to no price feeds.
+    ///
+    async fn close_web_socket(&mut self) {
+        if let Some(ref mut client) = self.ws_client {
+            client.close_web_socket().await;
+            self.ws_client = None;
+            self.price_feed_callbacks.clear();
+        }
     }
 }
