@@ -143,24 +143,25 @@ where
             return Ok(vec![]);
         }
 
-        let mut params = HashMap::new();
+        let mut params = Vec::new();
         for price_id in price_ids {
-            params.insert("ids[]", price_id.to_string());
+            params.push(("ids[]", price_id.to_string()));
         }
         let verbose = match self.price_feed_request_config.verbose {
             Some(verbose) => verbose,
             None => true,
         };
-        params.insert("verbose", verbose.to_string());
+        params.push(("verbose", verbose.to_string()));
 
         let binary = match self.price_feed_request_config.binary {
             Some(binary) => binary,
             None => true,
         };
-        params.insert("binary", binary.to_string());
+        params.push(("binary", binary.to_string()));
 
         let url = format!("{}/api/latest_price_feeds", self.ws_endpoint);
         let response = self.http_client.get(url).query(&params).send().await?;
+        println!("{}", response.url().to_string());
 
         let price_feed_json = response.json::<Vec<PriceFeed>>().await?;
 
@@ -286,28 +287,16 @@ where
 
     /// Fetch the list of available price feed ids.
     /// This will throw an axios error if there is a network problem or the price service returns a non-ok response.
-    pub async fn get_price_feed_ids(
-        &self,
-        price_ids: &[&str],
-        publish_time: DateTime<Utc>,
-    ) -> Vec<PriceFeed> {
-        let mut params = HashMap::new();
-        params.insert("ids", price_ids.join(","));
-        params.insert("publish_time", publish_time.second().to_string());
-
+    pub async fn get_price_feed_ids(&self) -> Vec<String> {
         let url = format!("{}/api/price_feed_ids", self.ws_endpoint);
         let response = self
             .http_client
             .get(url)
-            .query(&params)
             .send()
             .await
             .expect("Send request");
 
-        let price_feed_json = response
-            .json::<Vec<PriceFeed>>()
-            .await
-            .expect("deserializing");
+        let price_feed_json = response.json::<Vec<String>>().await.expect("deserializing");
 
         price_feed_json
     }
@@ -386,5 +375,28 @@ where
             self.ws_client = None;
             self.price_feed_callbacks.clear();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ENDPOINT: &str = "https://hermes.pyth.network";
+
+    type Cb = fn(PriceFeed);
+
+    #[tokio::test]
+    async fn test_http_endpoints() {
+        let connection: PriceServiceConnection<Cb> = PriceServiceConnection::new(ENDPOINT, None);
+        let ids = connection.get_price_feed_ids().await;
+        assert!(!ids.is_empty());
+
+        let price_ids: Vec<&str> = ids[0..2].iter().map(|price_id| price_id.as_str()).collect();
+        let price_feeds = connection.get_latest_price_feeds(&price_ids).await;
+        assert!(price_feeds.is_ok());
+
+        let price_feeds = price_feeds.unwrap();
+        assert_eq!(price_feeds.len(), 2);
     }
 }
