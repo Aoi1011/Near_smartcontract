@@ -6,7 +6,10 @@ use price_service_client::price_service_connection::{
 #[tokio::main]
 async fn main() {
     let config = PriceServiceConnectionConfig::default();
-    let connection = PriceServiceConnection::new("https://hermes.pyth.network", Some(config));
+    // let function |price_feed| {
+    //     println!("Hello world");
+    // };
+    let mut connection = PriceServiceConnection::new("https://hermes.pyth.network", Some(config));
 
     let price_feeds = connection
         .get_latest_price_feeds(&[
@@ -38,4 +41,10 @@ async fn main() {
         .await
         .expect("get price feed");
     println!("Price feed: {price_feed:?}");
+
+    connection
+        .subscribe_price_feed_updates(&["0x1"], |feed| {
+            println!("{feed:?}");
+        })
+        .await;
 }

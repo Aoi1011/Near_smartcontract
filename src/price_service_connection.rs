@@ -8,9 +8,6 @@ use tokio_tungstenite::tungstenite::Message;
 
 use crate::resilient_web_socket::ResilientWebSocket;
 
-#[derive(Debug, Clone, Eq, Hash, PartialEq)]
-pub struct PriceFeedUpdateCallback<F: Fn(PriceFeed) + Send + Sync + Clone>(F);
-
 #[derive(Debug, Default)]
 pub struct PriceFeedRequestConfig {
     /// Optional verbose to request for verbose information from the service
@@ -86,10 +83,10 @@ pub struct VaaResponse {
 
 pub struct PriceServiceConnection<F>
 where
-    F: Fn(PriceFeed) + Send + Sync + Clone,
+    F: FnMut(PriceFeed) + Send + Sync + Clone,
 {
     http_client: Client,
-    price_feed_callbacks: HashMap<String, Vec<PriceFeedUpdateCallback<F>>>,
+    price_feed_callbacks: HashMap<String, Vec<F>>,
     ws_client: Option<ResilientWebSocket>,
     ws_endpoint: String,
     price_feed_request_config: PriceFeedRequestConfig,
@@ -97,7 +94,7 @@ where
 
 impl<F> PriceServiceConnection<F>
 where
-    F: Fn(PriceFeed) + Send + Sync + Clone,
+    F: FnMut(PriceFeed) + Send + Sync + Clone,
 {
     pub fn new(endpoint: &str, config: Option<PriceServiceConnectionConfig>) -> Self {
         let price_feed_request_config = if let Some(price_service_config) = config {
@@ -322,11 +319,7 @@ where
     /// Also, it won't throw any exception if given price ids are invalid or connection errors. Instead,
     /// it calls `connection.onWsError`. If you want to handle the errors you should set the
     /// `onWsError` function to your custom error handler.
-    pub async fn subscribe_price_feed_updates(
-        &mut self,
-        price_ids: &[&str],
-        cb: PriceFeedUpdateCallback<F>,
-    ) {
+    pub async fn subscribe_price_feed_updates(&mut self, price_ids: &[&str], cb: F) {
         if self.ws_client.is_none() {
             self.start_web_socket().await;
         }
