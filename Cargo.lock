@@ -849,6 +849,7 @@ dependencies = [
  "pyth-sdk",
  "reqwest",
  "serde",
+ "serde_json",
  "tokio",
  "tokio-tungstenite",
 ]
