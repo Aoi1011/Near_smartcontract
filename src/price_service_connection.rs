@@ -1,4 +1,4 @@
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, rc::Rc, time::Duration};
 
 use chrono::{DateTime, Timelike, Utc};
 use pyth_sdk::PriceFeed;
@@ -83,10 +83,10 @@ pub struct VaaResponse {
 
 pub struct PriceServiceConnection<F>
 where
-    F: FnMut(PriceFeed) + Send + Sync + Clone,
+    F: FnMut(PriceFeed) + Send + Sync,
 {
     http_client: Client,
-    price_feed_callbacks: HashMap<String, Vec<F>>,
+    price_feed_callbacks: HashMap<String, Vec<Rc<F>>>,
     ws_client: Option<ResilientWebSocket>,
     ws_endpoint: String,
     price_feed_request_config: PriceFeedRequestConfig,
@@ -94,7 +94,7 @@ where
 
 impl<F> PriceServiceConnection<F>
 where
-    F: FnMut(PriceFeed) + Send + Sync + Clone,
+    F: FnMut(PriceFeed) + Send + Sync,
 {
     pub fn new(endpoint: &str, config: Option<PriceServiceConnectionConfig>) -> Self {
         let price_feed_request_config = if let Some(price_service_config) = config {
@@ -300,8 +300,7 @@ where
         price_feed_json
     }
 
-    ///
-    /// Unsubscribe from updates for given price ids.
+    /// Subscribe to updates for given price ids.
     ///
     /// It will close the websocket connection if it's not subscribed to any price feed updates anymore.
     /// Also, it won't throw any exception if given price ids are invalid or connection errors. Instead,
@@ -325,6 +324,7 @@ where
 
         let mut new_price_ids = Vec::new();
 
+        let callback = Rc::new(cb);
         for id in price_ids {
             if !self.price_feed_callbacks.contains_key(id) {
                 self.price_feed_callbacks.insert(id.to_string(), Vec::new());
@@ -332,7 +332,7 @@ where
             }
 
             let price_feed_callbacks = self.price_feed_callbacks.get_mut(id).unwrap();
-            price_feed_callbacks.push(cb.clone());
+            price_feed_callbacks.push(callback.clone());
         }
 
         let message = ClientMessage {
@@ -350,7 +350,6 @@ where
         }
     }
 
-    ///
     /// Starts connection websocket.
     ///
     /// This function is called automatically upon subscribing to price feed updates.
@@ -361,14 +360,13 @@ where
         self.ws_client = Some(web_socket);
     }
 
-    ///
     /// Closes connection websocket.
     ///
     /// At termination, the websocket should be closed to finish the
     /// process elegantly. It will automatically close when the connection
     /// is subscribed to no price feeds.
     ///
-    async fn close_web_socket(&mut self) {
+    pub async fn close_web_socket(&mut self) {
         if let Some(ref mut client) = self.ws_client {
             client.close_web_socket().await;
             self.ws_client = None;
@@ -507,5 +505,39 @@ mod tests {
             .expect("Failed to get latest vaas");
         assert!(!vaa.is_empty());
         assert!(publish_time >= publish_time_10_sec_ago.timestamp());
+    }
+
+    #[tokio::test]
+    async fn test_websocket_subscription_works_without_verbose_and_binary() {
+        let mut connection = PriceServiceConnection::new(ENDPOINT, None);
+
+        let ids = connection.get_price_feed_ids().await;
+        assert!(!ids.is_empty());
+
+        let mut counter = HashMap::new();
+        let mut total_counter = 0;
+
+        let price_ids: Vec<&str> = ids[0..2].iter().map(|price_id| price_id.as_str()).collect();
+        connection
+            .subscribe_price_feed_updates(&price_ids, |price_feed| {
+                assert!(price_feed.get_metadata().is_some());
+                assert!(price_feed.get_vaa().is_some());
+
+                counter
+                    .entry(price_feed.id.to_string())
+                    .and_modify(|counter| *counter += 1)
+                    .or_insert(1);
+                total_counter += 1;
+            })
+            .await;
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+        connection.close_web_socket().await;
+
+        assert_eq!(total_counter, 30);
+
+        for id in ids {
+            assert!(counter.get(&id).is_some());
+        }
     }
 }

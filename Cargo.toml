@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 chrono = "0.4.38"
+env_logger = "0.11.3"
 futures-util = "0.3.30"
 log = "0.4.22"
 pyth-sdk = { git = "https://github.com/aoikurokawa/pyth-sdk-rs" }
@@ -19,3 +20,7 @@ tokio-tungstenite = "0.23.1"
 [[example]]
 name = "price_service_client"
 path = "./examples/price_service_client.rs"
+
+[[example]]
+name = "subscribe_price_feed_updates"
+path = "./examples/subscribe_price_feed_updates.rs"

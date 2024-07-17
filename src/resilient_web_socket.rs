@@ -113,7 +113,7 @@ impl ResilientWebSocket {
                 return;
             } else {
                 waited_time += Duration::from_millis(10);
-                let _ = tokio::time::sleep(Duration::from_millis(10));
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
         }
     }
