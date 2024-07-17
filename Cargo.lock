@@ -875,8 +875,7 @@ dependencies = [
 [[package]]
 name = "pyth-sdk"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e7aeef4d5f0a9c98ff5af2ddd84a8b89919c512188305b497a9eb9afa97a949"
+source = "git+https://github.com/aoikurokawa/pyth-sdk-rs#52f62ebbf1ae616f71addcd225dd74a9eb5d73d4"
 dependencies = [
  "borsh",
  "borsh-derive",

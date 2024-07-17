@@ -77,7 +77,7 @@ enum ServerMessage {
 #[derive(Debug, Deserialize)]
 pub struct VaaResponse {
     #[serde(rename = "publishTime")]
-    publish_time: u64,
+    publish_time: i64,
     vaa: String,
 }
 
@@ -161,7 +161,6 @@ where
 
         let url = format!("{}/api/latest_price_feeds", self.ws_endpoint);
         let response = self.http_client.get(url).query(&params).send().await?;
-        println!("{}", response.url().to_string());
 
         let price_feed_json = response.json::<Vec<PriceFeed>>().await?;
 
@@ -203,7 +202,7 @@ where
     ) -> Result<VaaResponse, String> {
         let mut params = HashMap::new();
         params.insert("id", price_id.to_string());
-        params.insert("publish_time", publish_time.second().to_string());
+        params.insert("publish_time", publish_time.timestamp().to_string());
 
         let url = format!("{}/api/get_vaa", self.ws_endpoint);
         let response = self
@@ -380,6 +379,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use chrono::Duration;
+
     use super::*;
 
     const ENDPOINT: &str = "https://hermes.pyth.network";
@@ -389,6 +390,7 @@ mod tests {
     #[tokio::test]
     async fn test_http_endpoints() {
         let connection: PriceServiceConnection<Cb> = PriceServiceConnection::new(ENDPOINT, None);
+
         let ids = connection.get_price_feed_ids().await;
         assert!(!ids.is_empty());
 
@@ -398,5 +400,112 @@ mod tests {
 
         let price_feeds = price_feeds.unwrap();
         assert_eq!(price_feeds.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_get_price_feed_with_verbose_flag_works() {
+        let price_service_connection_config = PriceServiceConnectionConfig {
+            timeout: None,
+            http_retries: None,
+            verbose: Some(true),
+            price_feed_request_config: None,
+        };
+        let connection: PriceServiceConnection<Cb> =
+            PriceServiceConnection::new(ENDPOINT, Some(price_service_connection_config));
+
+        let ids = connection.get_price_feed_ids().await;
+        assert!(!ids.is_empty());
+
+        let price_ids: Vec<&str> = ids[0..2].iter().map(|price_id| price_id.as_str()).collect();
+        let price_feeds = connection.get_latest_price_feeds(&price_ids).await;
+        assert!(price_feeds.is_ok());
+
+        let price_feeds = price_feeds.unwrap();
+        assert_eq!(price_feeds.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_get_price_feed_with_binary_flag_works() {
+        let price_feed_request_config = PriceFeedRequestConfig {
+            verbose: None,
+            binary: Some(true),
+            allow_out_of_order: None,
+        };
+        let price_service_connection_config = PriceServiceConnectionConfig {
+            timeout: None,
+            http_retries: None,
+            verbose: None,
+            price_feed_request_config: Some(price_feed_request_config),
+        };
+        let connection: PriceServiceConnection<Cb> =
+            PriceServiceConnection::new(ENDPOINT, Some(price_service_connection_config));
+
+        let ids = connection.get_price_feed_ids().await;
+        assert!(!ids.is_empty());
+
+        let price_ids: Vec<&str> = ids[0..2].iter().map(|price_id| price_id.as_str()).collect();
+        let price_feeds = connection.get_latest_price_feeds(&price_ids).await;
+        assert!(price_feeds.is_ok());
+
+        let price_feeds = price_feeds.unwrap();
+        assert_eq!(price_feeds.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_get_latest_vaa_works() {
+        let price_feed_request_config = PriceFeedRequestConfig {
+            verbose: None,
+            binary: Some(true),
+            allow_out_of_order: None,
+        };
+        let price_service_connection_config = PriceServiceConnectionConfig {
+            timeout: None,
+            http_retries: None,
+            verbose: None,
+            price_feed_request_config: Some(price_feed_request_config),
+        };
+        let connection: PriceServiceConnection<Cb> =
+            PriceServiceConnection::new(ENDPOINT, Some(price_service_connection_config));
+
+        let ids = connection.get_price_feed_ids().await;
+        assert!(!ids.is_empty());
+
+        let price_ids: Vec<&str> = ids[0..2].iter().map(|price_id| price_id.as_str()).collect();
+        let vaas = connection
+            .get_latest_vass(&price_ids)
+            .await
+            .expect("Failed to get latest vaas");
+        assert!(!vaas.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_vaa_works() {
+        let price_feed_request_config = PriceFeedRequestConfig {
+            verbose: None,
+            binary: Some(true),
+            allow_out_of_order: None,
+        };
+        let price_service_connection_config = PriceServiceConnectionConfig {
+            timeout: None,
+            http_retries: None,
+            verbose: None,
+            price_feed_request_config: Some(price_feed_request_config),
+        };
+        let connection: PriceServiceConnection<Cb> =
+            PriceServiceConnection::new(ENDPOINT, Some(price_service_connection_config));
+
+        let ids = connection.get_price_feed_ids().await;
+        assert!(!ids.is_empty());
+
+        let publish_time_10_sec_ago = Utc::now() - Duration::seconds(10);
+        let VaaResponse { publish_time, vaa } = connection
+            .get_vaa(
+                "19d75fde7fee50fe67753fdc825e583594eb2f51ae84e114a5246c4ab23aff4c",
+                publish_time_10_sec_ago,
+            )
+            .await
+            .expect("Failed to get latest vaas");
+        assert!(!vaa.is_empty());
+        assert!(publish_time >= publish_time_10_sec_ago.timestamp());
     }
 }
