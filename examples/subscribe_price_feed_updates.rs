@@ -5,7 +5,8 @@ use price_service_client::price_service_connection::PriceServiceConnection;
 #[tokio::main]
 async fn main() {
     env_logger::init();
-    let mut connection = PriceServiceConnection::new("https://hermes.pyth.network", None);
+    let mut connection = PriceServiceConnection::new("https://hermes.pyth.network", None)
+        .expect("Failed to construct");
 
     let ids = connection.get_price_feed_ids().await;
     assert!(!ids.is_empty());

@@ -9,7 +9,8 @@ async fn main() {
     // let function |price_feed| {
     //     println!("Hello world");
     // };
-    let mut connection = PriceServiceConnection::new("https://hermes.pyth.network", Some(config));
+    let mut connection = PriceServiceConnection::new("https://hermes.pyth.network", Some(config))
+        .expect("Failed to construct");
 
     let price_feeds = connection
         .get_latest_price_feeds(&[

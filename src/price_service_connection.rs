@@ -2,7 +2,7 @@ use std::{collections::HashMap, rc::Rc, time::Duration};
 
 use chrono::{DateTime, Timelike, Utc};
 use pyth_sdk::PriceFeed;
-use reqwest::{Client, StatusCode};
+use reqwest::{Client, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -86,6 +86,7 @@ where
     F: FnMut(PriceFeed) + Send + Sync,
 {
     http_client: Client,
+    base_url: Url,
     price_feed_callbacks: HashMap<String, Vec<Rc<F>>>,
     ws_client: Option<ResilientWebSocket>,
     ws_endpoint: String,
@@ -96,7 +97,10 @@ impl<F> PriceServiceConnection<F>
 where
     F: FnMut(PriceFeed) + Send + Sync,
 {
-    pub fn new(endpoint: &str, config: Option<PriceServiceConnectionConfig>) -> Self {
+    pub fn new(
+        endpoint: &str,
+        config: Option<PriceServiceConnectionConfig>,
+    ) -> Result<Self, crate::error::PriceServiceError> {
         let price_feed_request_config = if let Some(price_service_config) = config {
             if let Some(config) = price_service_config.price_feed_request_config {
                 let verbose = match config.verbose {
@@ -124,13 +128,14 @@ where
             }
         };
 
-        Self {
+        Ok(Self {
             http_client: Client::new(),
+            base_url: Url::parse(endpoint)?,
             price_feed_callbacks: HashMap::new(),
             ws_client: None,
             ws_endpoint: endpoint.to_string(),
             price_feed_request_config,
-        }
+        })
     }
 
     /// Fetch Latest PriceFeeds of given price ids.
@@ -159,7 +164,7 @@ where
         };
         params.push(("binary", binary.to_string()));
 
-        let url = format!("{}/api/latest_price_feeds", self.ws_endpoint);
+        let url = self.base_url.join("/api/latest_price_feeds");
         let response = self.http_client.get(url).query(&params).send().await?;
 
         let price_feed_json = response.json::<Vec<PriceFeed>>().await?;
@@ -389,7 +394,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_http_endpoints() {
-        let connection: PriceServiceConnection<Cb> = PriceServiceConnection::new(ENDPOINT, None);
+        let connection: PriceServiceConnection<Cb> =
+            PriceServiceConnection::new(ENDPOINT, None).expect("Failed to construct");
 
         let ids = connection.get_price_feed_ids().await;
         assert!(!ids.is_empty());
@@ -411,7 +417,8 @@ mod tests {
             price_feed_request_config: None,
         };
         let connection: PriceServiceConnection<Cb> =
-            PriceServiceConnection::new(ENDPOINT, Some(price_service_connection_config));
+            PriceServiceConnection::new(ENDPOINT, Some(price_service_connection_config))
+                .expect("Failed to construct");
 
         let ids = connection.get_price_feed_ids().await;
         assert!(!ids.is_empty());
@@ -438,7 +445,8 @@ mod tests {
             price_feed_request_config: Some(price_feed_request_config),
         };
         let connection: PriceServiceConnection<Cb> =
-            PriceServiceConnection::new(ENDPOINT, Some(price_service_connection_config));
+            PriceServiceConnection::new(ENDPOINT, Some(price_service_connection_config))
+                .expect("Failed to construct");
 
         let ids = connection.get_price_feed_ids().await;
         assert!(!ids.is_empty());
@@ -465,7 +473,8 @@ mod tests {
             price_feed_request_config: Some(price_feed_request_config),
         };
         let connection: PriceServiceConnection<Cb> =
-            PriceServiceConnection::new(ENDPOINT, Some(price_service_connection_config));
+            PriceServiceConnection::new(ENDPOINT, Some(price_service_connection_config))
+                .expect("Failed to construct");
 
         let ids = connection.get_price_feed_ids().await;
         assert!(!ids.is_empty());
@@ -492,7 +501,8 @@ mod tests {
             price_feed_request_config: Some(price_feed_request_config),
         };
         let connection: PriceServiceConnection<Cb> =
-            PriceServiceConnection::new(ENDPOINT, Some(price_service_connection_config));
+            PriceServiceConnection::new(ENDPOINT, Some(price_service_connection_config))
+                .expect("Failed to construct");
 
         let ids = connection.get_price_feed_ids().await;
         assert!(!ids.is_empty());
@@ -511,7 +521,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_websocket_subscription_works_without_verbose_and_binary() {
-        let mut connection = PriceServiceConnection::new(ENDPOINT, None);
+        let mut connection =
+            PriceServiceConnection::new(ENDPOINT, None).expect("Failed to construct");
 
         let ids = connection.get_price_feed_ids().await;
         assert!(!ids.is_empty());
