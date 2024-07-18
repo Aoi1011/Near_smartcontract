@@ -8,7 +8,10 @@ async fn main() {
     let mut connection = PriceServiceConnection::new("https://hermes.pyth.network", None)
         .expect("Failed to construct");
 
-    let ids = connection.get_price_feed_ids().await;
+    let ids = connection
+        .get_price_feed_ids()
+        .await
+        .expect("Failed to get price feed ids");
     assert!(!ids.is_empty());
 
     let mut counter = HashMap::new();

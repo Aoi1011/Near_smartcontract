@@ -6,7 +6,7 @@ use reqwest::{Client, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::resilient_web_socket::ResilientWebSocket;
+use crate::{error::PriceServiceError, resilient_web_socket::ResilientWebSocket};
 
 #[derive(Debug, Default)]
 pub struct PriceFeedRequestConfig {
@@ -100,7 +100,7 @@ where
     pub fn new(
         endpoint: &str,
         config: Option<PriceServiceConnectionConfig>,
-    ) -> Result<Self, crate::error::PriceServiceError> {
+    ) -> Result<Self, PriceServiceError> {
         let price_feed_request_config = if let Some(price_service_config) = config {
             if let Some(config) = price_service_config.price_feed_request_config {
                 let verbose = match config.verbose {
@@ -128,9 +128,14 @@ where
             }
         };
 
+        let base_url = match Url::parse(endpoint) {
+            Ok(url) => url,
+            Err(e) => return Err(PriceServiceError::BadUrl(e)),
+        };
+
         Ok(Self {
             http_client: Client::new(),
-            base_url: Url::parse(endpoint)?,
+            base_url,
             price_feed_callbacks: HashMap::new(),
             ws_client: None,
             ws_endpoint: endpoint.to_string(),
@@ -143,7 +148,7 @@ where
     pub async fn get_latest_price_feeds(
         &self,
         price_ids: &[&str],
-    ) -> Result<Vec<PriceFeed>, reqwest::Error> {
+    ) -> Result<Vec<PriceFeed>, PriceServiceError> {
         if price_ids.is_empty() {
             return Ok(vec![]);
         }
@@ -164,9 +169,11 @@ where
         };
         params.push(("binary", binary.to_string()));
 
-        let url = self.base_url.join("/api/latest_price_feeds");
+        let url = match self.base_url.join("/api/latest_price_feeds") {
+            Ok(url) => url,
+            Err(e) => return Err(PriceServiceError::BadUrl(e)),
+        };
         let response = self.http_client.get(url).query(&params).send().await?;
-
         let price_feed_json = response.json::<Vec<PriceFeed>>().await?;
 
         Ok(price_feed_json)
@@ -176,7 +183,10 @@ where
     /// This will throw an axios error if there is a network problem or the price service returns a non-ok response (e.g: Invalid price ids)
     ///
     /// This function is coupled to wormhole implemntation.
-    pub async fn get_latest_vass(&self, price_ids: &[&str]) -> Result<Vec<String>, reqwest::Error> {
+    pub async fn get_latest_vass(
+        &self,
+        price_ids: &[&str],
+    ) -> Result<Vec<String>, PriceServiceError> {
         if price_ids.is_empty() {
             return Ok(vec![]);
         }
@@ -186,7 +196,10 @@ where
             params.insert("ids[]", price_id.to_string());
         }
 
-        let url = format!("{}/api/latest_vaas", self.ws_endpoint);
+        let url = match self.base_url.join("/api/latest_vaas") {
+            Ok(url) => url,
+            Err(e) => return Err(PriceServiceError::BadUrl(e)),
+        };
         let response = self.http_client.get(url).query(&params).send().await?;
 
         let vaas = response.json::<Vec<String>>().await?;
@@ -204,35 +217,27 @@ where
         &self,
         price_id: &str,
         publish_time: DateTime<Utc>,
-    ) -> Result<VaaResponse, String> {
+    ) -> Result<VaaResponse, PriceServiceError> {
         let mut params = HashMap::new();
         params.insert("id", price_id.to_string());
         params.insert("publish_time", publish_time.timestamp().to_string());
 
-        let url = format!("{}/api/get_vaa", self.ws_endpoint);
-        let response = self
-            .http_client
-            .get(url)
-            .query(&params)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
+        let url = match self.base_url.join("/api/get_vaa") {
+            Ok(url) => url,
+            Err(e) => return Err(PriceServiceError::BadUrl(e)),
+        };
+        let response = self.http_client.get(url).query(&params).send().await?;
 
         match response.status() {
             StatusCode::OK => {
-                let vaa = response
-                    .json::<VaaResponse>()
-                    .await
-                    .map_err(|e| e.to_string())?;
+                let vaa = response.json::<VaaResponse>().await?;
 
                 Ok(vaa)
             }
-            status => {
-                let err_str = response.json::<String>().await.map_err(|e| {
-                    format!("Error status: {status}, Error message: {}", e.to_string())
-                })?;
+            _status => {
+                let err_str = response.json::<String>().await?;
 
-                Err(err_str)
+                Err(PriceServiceError::NotJson(err_str))
             }
         }
     }
@@ -245,7 +250,7 @@ where
         &self,
         price_id: &str,
         publish_time: DateTime<Utc>,
-    ) -> Result<PriceFeed, String> {
+    ) -> Result<PriceFeed, PriceServiceError> {
         let mut params = HashMap::new();
         params.insert("id", price_id.to_string());
         params.insert("publish_time", publish_time.second().to_string());
@@ -262,37 +267,32 @@ where
         };
         params.insert("binary", binary.to_string());
 
-        let url = format!("{}/api/get_price_feed", self.ws_endpoint);
-        let response = self
-            .http_client
-            .get(url)
-            .query(&params)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
+        let url = match self.base_url.join("/api/get_price_feed") {
+            Ok(url) => url,
+            Err(e) => return Err(PriceServiceError::BadUrl(e)),
+        };
+        let response = self.http_client.get(url).query(&params).send().await?;
 
         match response.status() {
             StatusCode::OK => {
-                let price_feed_json = response
-                    .json::<PriceFeed>()
-                    .await
-                    .map_err(|e| e.to_string())?;
+                let price_feed_json = response.json::<PriceFeed>().await?;
                 Ok(price_feed_json)
             }
-            status => {
-                let err_str = response.json::<String>().await.map_err(|e| {
-                    format!("Error status: {status}, Error message: {}", e.to_string())
-                })?;
+            _status => {
+                let err_str = response.json::<String>().await?;
 
-                Err(err_str)
+                Err(PriceServiceError::NotJson(err_str))
             }
         }
     }
 
     /// Fetch the list of available price feed ids.
     /// This will throw an axios error if there is a network problem or the price service returns a non-ok response.
-    pub async fn get_price_feed_ids(&self) -> Vec<String> {
-        let url = format!("{}/api/price_feed_ids", self.ws_endpoint);
+    pub async fn get_price_feed_ids(&self) -> Result<Vec<String>, PriceServiceError> {
+        let url = match self.base_url.join("/api/price_feed_ids") {
+            Ok(url) => url,
+            Err(e) => return Err(PriceServiceError::BadUrl(e)),
+        };
         let response = self
             .http_client
             .get(url)
@@ -300,9 +300,9 @@ where
             .await
             .expect("Send request");
 
-        let price_feed_json = response.json::<Vec<String>>().await.expect("deserializing");
+        let price_feed_json = response.json::<Vec<String>>().await?;
 
-        price_feed_json
+        Ok(price_feed_json)
     }
 
     /// Subscribe to updates for given price ids.
@@ -397,7 +397,10 @@ mod tests {
         let connection: PriceServiceConnection<Cb> =
             PriceServiceConnection::new(ENDPOINT, None).expect("Failed to construct");
 
-        let ids = connection.get_price_feed_ids().await;
+        let ids = connection
+            .get_price_feed_ids()
+            .await
+            .expect("Failed to get price feed ids");
         assert!(!ids.is_empty());
 
         let price_ids: Vec<&str> = ids[0..2].iter().map(|price_id| price_id.as_str()).collect();
@@ -420,7 +423,10 @@ mod tests {
             PriceServiceConnection::new(ENDPOINT, Some(price_service_connection_config))
                 .expect("Failed to construct");
 
-        let ids = connection.get_price_feed_ids().await;
+        let ids = connection
+            .get_price_feed_ids()
+            .await
+            .expect("Failed to get price feed ids");
         assert!(!ids.is_empty());
 
         let price_ids: Vec<&str> = ids[0..2].iter().map(|price_id| price_id.as_str()).collect();
@@ -448,7 +454,10 @@ mod tests {
             PriceServiceConnection::new(ENDPOINT, Some(price_service_connection_config))
                 .expect("Failed to construct");
 
-        let ids = connection.get_price_feed_ids().await;
+        let ids = connection
+            .get_price_feed_ids()
+            .await
+            .expect("Failed to get price feed ids");
         assert!(!ids.is_empty());
 
         let price_ids: Vec<&str> = ids[0..2].iter().map(|price_id| price_id.as_str()).collect();
@@ -476,7 +485,10 @@ mod tests {
             PriceServiceConnection::new(ENDPOINT, Some(price_service_connection_config))
                 .expect("Failed to construct");
 
-        let ids = connection.get_price_feed_ids().await;
+        let ids = connection
+            .get_price_feed_ids()
+            .await
+            .expect("Failed to get price feed ids");
         assert!(!ids.is_empty());
 
         let price_ids: Vec<&str> = ids[0..2].iter().map(|price_id| price_id.as_str()).collect();
@@ -504,7 +516,10 @@ mod tests {
             PriceServiceConnection::new(ENDPOINT, Some(price_service_connection_config))
                 .expect("Failed to construct");
 
-        let ids = connection.get_price_feed_ids().await;
+        let ids = connection
+            .get_price_feed_ids()
+            .await
+            .expect("Failed to get latest vaas");
         assert!(!ids.is_empty());
 
         let publish_time_10_sec_ago = Utc::now() - Duration::seconds(10);
@@ -524,7 +539,10 @@ mod tests {
         let mut connection =
             PriceServiceConnection::new(ENDPOINT, None).expect("Failed to construct");
 
-        let ids = connection.get_price_feed_ids().await;
+        let ids = connection
+            .get_price_feed_ids()
+            .await
+            .expect("Failed to get latest vaas");
         assert!(!ids.is_empty());
 
         let mut counter = HashMap::new();
