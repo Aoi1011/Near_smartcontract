@@ -62,6 +62,7 @@ impl ResilientWebSocket {
         }
         log::info!("Creating Web Socket client");
 
+        log::info!("Endpoint: {}", self.endpoint);
         match connect_async(&self.endpoint).await {
             Ok((ws_stream, _)) => {
                 self.ws_client = Some(ws_stream);

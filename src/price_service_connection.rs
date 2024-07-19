@@ -89,7 +89,7 @@ where
     base_url: Url,
     price_feed_callbacks: HashMap<String, Vec<Rc<F>>>,
     ws_client: Option<ResilientWebSocket>,
-    ws_endpoint: String,
+    ws_endpoint: Url,
     price_feed_request_config: PriceFeedRequestConfig,
 }
 
@@ -133,12 +133,23 @@ where
             Err(e) => return Err(PriceServiceError::BadUrl(e)),
         };
 
+        let mut ws_endpoint = base_url.clone();
+        match base_url.scheme() {
+            "http" => ws_endpoint.set_scheme("ws").unwrap(),
+            "https" => ws_endpoint.set_scheme("wss").unwrap(),
+            _ => {
+                return Err(PriceServiceError::BadUrl(
+                    url::ParseError::InvalidIpv4Address,
+                ))
+            }
+        };
+
         Ok(Self {
             http_client: Client::new(),
             base_url,
             price_feed_callbacks: HashMap::new(),
             ws_client: None,
-            ws_endpoint: endpoint.to_string(),
+            ws_endpoint,
             price_feed_request_config,
         })
     }
@@ -359,9 +370,9 @@ where
     ///
     /// This function is called automatically upon subscribing to price feed updates.
     pub async fn start_web_socket(&mut self) {
-        let endpoint = self.ws_endpoint.to_string();
-        let endpoint = endpoint.replace("https", "wss");
-        let mut web_socket = ResilientWebSocket::new(&endpoint);
+        // let endpoint = self.ws_endpoint.to_string();
+        // let endpoint = endpoint.replace("https", "wss");
+        let mut web_socket = ResilientWebSocket::new(&self.ws_endpoint.to_string());
         web_socket.start_web_socket().await;
 
         self.ws_client = Some(web_socket);
