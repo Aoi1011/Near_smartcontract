@@ -367,7 +367,7 @@ where
     ///
     /// This function is called automatically upon subscribing to price feed updates.
     pub async fn start_web_socket(&mut self) {
-        let endpoint = format!("{}ws", self.ws_endpoint.to_string());
+        let endpoint = format!("{}ws", self.ws_endpoint);
         let mut web_socket = ResilientWebSocket::new(&endpoint);
         web_socket.start_web_socket().await;
 
