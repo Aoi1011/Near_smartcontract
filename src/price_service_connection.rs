@@ -81,21 +81,27 @@ pub struct VaaResponse {
     vaa: String,
 }
 
-pub struct PriceServiceConnection<F>
+pub struct PriceServiceConnection<F, E, M, R>
 where
     F: FnMut(PriceFeed) + Send + Sync,
+    E: Fn(tokio_tungstenite::tungstenite::Error) + Send + Sync,
+    M: Fn(String) + Send + Sync,
+    R: Fn() + Send + Sync,
 {
     http_client: Client,
     base_url: Url,
     price_feed_callbacks: HashMap<String, Vec<Rc<F>>>,
-    ws_client: Option<ResilientWebSocket>,
+    ws_client: Option<ResilientWebSocket<E, M, R>>,
     ws_endpoint: Url,
     price_feed_request_config: PriceFeedRequestConfig,
 }
 
-impl<F> PriceServiceConnection<F>
+impl<F, E, M, R> PriceServiceConnection<F, E, M, R>
 where
     F: FnMut(PriceFeed) + Send + Sync,
+    E: Fn(tokio_tungstenite::tungstenite::Error) + Send + Sync,
+    M: Fn(String) + Send + Sync,
+    R: Fn() + Send + Sync,
 {
     pub fn new(
         endpoint: &str,
@@ -211,7 +217,6 @@ where
         let response = self.http_client.get(url).query(&params).send().await?;
 
         let vaas = response.json::<Vec<String>>().await?;
-
         Ok(vaas)
     }
 
@@ -368,7 +373,16 @@ where
     /// This function is called automatically upon subscribing to price feed updates.
     pub async fn start_web_socket(&mut self) {
         let endpoint = format!("{}ws", self.ws_endpoint);
-        let mut web_socket = ResilientWebSocket::new(&endpoint);
+        let on_error = |error: tokio_tungstenite::tungstenite::Error| {
+            log::error!("{error}");
+        };
+        let on_message = |message: String| {
+            log::info!("{message}");
+        };
+        let on_reconnect = || {
+            log::info!("Hello");
+        };
+        let mut web_socket = ResilientWebSocket::new(&endpoint, on_error, on_message, on_reconnect);
         web_socket.start_web_socket().await;
 
         self.ws_client = Some(web_socket);
@@ -388,6 +402,10 @@ where
         }
     }
 }
+
+// fn on_error(error: tokio_tungstenite::tungstenite::Error) {}
+// fn on_message(message: String) {}
+// fn on_reconnect() {}
 
 #[cfg(test)]
 mod tests {

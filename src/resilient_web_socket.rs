@@ -17,22 +17,38 @@ const PING_TIMEOUT_DURATION: Duration = Duration::from_secs(33); // 30s + 3s for
 ///
 /// This class also logs events if logger is given and by replacing onError method you can handle
 /// connection errors yourself (e.g: do not retry and close the connection).
-pub struct ResilientWebSocket {
+pub struct ResilientWebSocket<E, M, R>
+where
+    E: Fn(tokio_tungstenite::tungstenite::Error) + Send + Sync,
+    M: Fn(String) + Send + Sync,
+    R: Fn() + Send + Sync,
+{
     endpoint: String,
     ws_client: Option<WebSocketStream<MaybeTlsStream<TcpStream>>>,
     ws_user_closed: bool,
     ws_failed_attempts: usize,
     ping_timeout: Option<Instant>,
+    on_error: E,
+    on_message: M,
+    on_reconnect: R,
 }
 
-impl ResilientWebSocket {
-    pub fn new(endpoint: &str) -> Self {
+impl<E, M, R> ResilientWebSocket<E, M, R>
+where
+    E: Fn(tokio_tungstenite::tungstenite::Error) + Send + Sync,
+    M: Fn(String) + Send + Sync,
+    R: Fn() + Send + Sync,
+{
+    pub fn new(endpoint: &str, on_error: E, on_message: M, on_reconnect: R) -> Self {
         Self {
             endpoint: endpoint.to_string(),
             ws_client: None,
             ws_user_closed: true,
             ws_failed_attempts: 0,
             ping_timeout: None,
+            on_error,
+            on_message,
+            on_reconnect,
         }
     }
 
