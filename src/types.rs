@@ -17,7 +17,7 @@ use wormhole_sdk::Chain;
 ///
 /// See https://pyth.network/developers/price-feed-ids for a list of all price feed ids.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct PriceIdInput([u8; 32]);
+pub struct PriceIdInput(pub [u8; 32]);
 
 impl From<PriceIdInput> for PriceIdentifier {
     fn from(id: PriceIdInput) -> Self {
@@ -129,7 +129,7 @@ pub struct RpcPrice {
     Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
 )]
 #[repr(C)]
-pub struct RpcPriceIdentifier([u8; 32]);
+pub struct RpcPriceIdentifier(pub [u8; 32]);
 
 impl RpcPriceIdentifier {
     pub fn new(bytes: [u8; 32]) -> RpcPriceIdentifier {

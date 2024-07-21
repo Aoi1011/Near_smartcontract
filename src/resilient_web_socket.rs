@@ -1,5 +1,9 @@
 use std::{
+    cell::RefCell,
+    collections::HashMap,
     pin::Pin,
+    rc::Rc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -22,9 +26,9 @@ const PING_TIMEOUT_DURATION: Duration = Duration::from_secs(33); // 30s + 3s for
 /// connection errors yourself (e.g: do not retry and close the connection).
 pub struct ResilientWebSocket {
     endpoint: String,
-    ws_client: Option<WebSocketStream<MaybeTlsStream<TcpStream>>>,
+    ws_client: Arc<Mutex<Option<WebSocketStream<MaybeTlsStream<TcpStream>>>>>,
     ws_user_closed: bool,
-    ws_failed_attempts: usize,
+    ws_failed_attempts: u32,
     ping_timeout: Option<Instant>,
 }
 
@@ -32,7 +36,7 @@ impl ResilientWebSocket {
     pub fn new(endpoint: &str) -> Self {
         Self {
             endpoint: endpoint.to_string(),
-            ws_client: None,
+            ws_client: Arc::new(Mutex::new(None)),
             ws_user_closed: true,
             ws_failed_attempts: 0,
             ping_timeout: None,
@@ -44,8 +48,11 @@ impl ResilientWebSocket {
 
         self.wait_for_maybe_ready_websocket().await;
 
-        if let Some(ref mut client) = self.ws_client {
-            let (mut write, _read) = client.split();
+        let ws_client = self.ws_client.clone();
+        let mut ws_stream = ws_client.lock().unwrap();
+
+        if let Some(ref mut stream) = *ws_stream {
+            let (mut write, _read) = stream.split();
             match write.send(data).await {
                 Ok(_) => {
                     log::info!("Sent");
@@ -59,18 +66,26 @@ impl ResilientWebSocket {
         }
     }
 
-    pub async fn start_web_socket(&mut self) {
-        if self.ws_client.is_some() {
+    pub async fn start_web_socket<F>(
+        &mut self,
+        price_feed_callbacks: &HashMap<String, Vec<Rc<RefCell<F>>>>,
+    ) where
+        F: FnMut(RpcPriceFeed) + Send + Sync,
+    {
+        let ws_client = self.ws_client.clone();
+        let mut client = ws_client.lock().unwrap();
+        if client.is_some() {
             return;
         }
         log::info!("Creating Web Socket client");
 
         match connect_async(&self.endpoint).await {
             Ok((ws_stream, _)) => {
-                self.ws_client = Some(ws_stream);
+                *client = Some(ws_stream);
                 self.ws_user_closed = false;
                 self.ws_failed_attempts = 0;
-                self.heartbeat().await;
+                // self.heartbeat().await;
+                self.listen(price_feed_callbacks);
             }
             Err(e) => {
                 log::error!("Websocket connection failed: {e}");
@@ -78,15 +93,46 @@ impl ResilientWebSocket {
         }
     }
 
-    // async fn listen(&mut self) {
-    //     let ws_stream = self.ws_client.unwrap();
-    //     while let Some(message) = ws_stream.next().await {
-    //         match message {
-    //             Ok(Message::Text(text)) => {
-    //             }
-    //         }
-    //     }
-    // }
+    async fn listen<F>(&mut self, price_feed_callbacks: &HashMap<String, Vec<Rc<RefCell<F>>>>)
+    where
+        F: FnMut(RpcPriceFeed) + Send + Sync,
+    {
+        let ws_client = self.ws_client.clone();
+        let mut ws_stream = ws_client.lock().unwrap();
+
+        if let Some(ref mut stream) = *ws_stream {
+            let (mut sender, mut receiver) = stream.split();
+            loop {
+                tokio::select! {
+                    Some(message) = receiver.next() => {
+                        match message {
+                            Ok(Message::Text(text)) => {
+                                on_message(text, price_feed_callbacks);
+                            }
+                            Ok(Message::Ping(_)) => {
+                                sender.send(Message::Pong(vec![])).await.unwrap();
+                            }
+                            Ok(Message::Pong(_)) => {
+                                // sender.send(Message::Pong(vec![])).await.unwrap();
+                            }
+                            Ok(Message::Close(_)) => {
+                               self.handle_close().await;
+                                break;
+                            }
+                            Ok(Message::Binary(_)) | Ok(Message::Frame(_)) => {
+                                unimplemented!()
+                            }
+                            Err(e) => {
+                                on_error(e.to_string());
+                                self.handle_close().await;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     /// Heartbeat is only enabled in node clients because they support handling
     /// ping-pong events.
@@ -94,40 +140,53 @@ impl ResilientWebSocket {
     /// This approach only works when server constantly pings the clients which.
     /// Otherwise you might consider sending ping and acting on pong responses
     /// yourself.
-    async fn heartbeat(&mut self) {
-        log::info!("Heartbeat");
-        let mut ping_interval = tokio::time::interval(PING_TIMEOUT_DURATION);
+    // async fn heartbeat(&mut self) {
+    //     log::info!("Heartbeat");
+    //     let mut ping_interval = tokio::time::interval(PING_TIMEOUT_DURATION);
 
-        loop {
-            ping_interval.tick().await;
-            if let Some(ref mut client) = self.ws_client {
-                if let Err(_) =
-                    tokio::time::timeout(PING_TIMEOUT_DURATION, client.send(Message::Ping(vec![])))
-                        .await
-                {
-                    log::warn!("Connection timed out!. Reconnecting...");
-                    let _ = self.restart_unexpected_closed_web_socket().await;
-                }
-            }
-        }
-    }
+    //     loop {
+    //         ping_interval.tick().await;
+    //         if let Some(ref mut client) = self.ws_client {
+    //             if let Err(_) =
+    //                 tokio::time::timeout(PING_TIMEOUT_DURATION, client.send(Message::Ping(vec![])))
+    //                     .await
+    //             {
+    //                 log::warn!("Connection timed out!. Reconnecting...");
+    //                 let _ = self.restart_unexpected_closed_web_socket().await;
+    //             }
+    //         }
+    //     }
+    // }
 
     async fn wait_for_maybe_ready_websocket(&mut self) {
         let mut waited_time = Duration::from_millis(0);
 
-        while let Some(ref mut client) = self.ws_client {
-            if !client.is_terminated() {
-                client.close(None).await.unwrap();
+        let ws_client = self.ws_client.clone();
+        let mut ws_stream = ws_client.lock().unwrap();
+
+        if let Some(ref mut stream) = *ws_stream {
+            if !stream.is_terminated() {
+                stream.close(None).await.unwrap();
                 return;
             }
 
             if waited_time > Duration::from_secs(5) {
-                client.close(None).await.unwrap();
+                stream.close(None).await.unwrap();
                 return;
             } else {
                 waited_time += Duration::from_millis(10);
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
+        }
+    }
+
+    async fn handle_close(&mut self) {
+        self.ws_client = Arc::new(Mutex::new(None));
+        if !self.ws_user_closed {
+            self.ws_failed_attempts += 1;
+            let wait_time = expo_backoff(self.ws_failed_attempts);
+            tokio::time::sleep(wait_time).await;
+            self.restart_unexpected_closed_web_socket().await;
         }
     }
 
@@ -158,6 +217,52 @@ impl ResilientWebSocket {
 
         self.ws_user_closed = true;
     }
+}
+
+fn on_message<F>(
+    data: String,
+    price_feed_callbacks: &HashMap<String, Vec<Rc<RefCell<F>>>>,
+) -> Result<(), String>
+where
+    F: FnMut(RpcPriceFeed) + Send + Sync,
+{
+    log::info!("Received message {}", data);
+
+    let message: ServerMessage = serde_json::from_str(&data).map_err(|e| {
+        log::error!("Error parsing message {data} as JSON");
+        log::error!("{e}");
+        on_error(e.to_string());
+        "".to_string()
+    })?;
+
+    match message {
+        ServerMessage::Response(response) => {
+            if let ServerResponseMessage::Err { error } = response {
+                log::error!("Error response from the websocket server {error}");
+                on_error(error);
+            }
+        }
+        ServerMessage::PriceUpdate { price_feed } => {
+            let id = String::from_utf8(price_feed.id.0.to_vec()).unwrap();
+            match price_feed_callbacks.get(&id) {
+                Some(callbacks) => {
+                    for callback in callbacks {
+                        let mut callback_ref = callback.borrow_mut();
+                        callback_ref(price_feed.clone());
+                    }
+                }
+                None => {
+                    log::warn!("Ignoring unsupported server response {data}");
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn on_error(error: String) {
+    log::error!("{error}");
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -194,32 +299,6 @@ enum ServerResponseMessage {
     #[serde(rename = "error")]
     Err { error: String },
 }
-
-fn on_message(data: String) -> Result<(), String> {
-    log::info!("Received message {}", data);
-
-    let message: ServerMessage = serde_json::from_str(&data).map_err(|e| {
-        log::error!("Error parsing message {data} as JSON");
-        log::error!("{e}");
-        on_error();
-        "".to_string()
-    })?;
-
-    match message {
-        ServerMessage::Response(response) => {
-            if let ServerResponseMessage::Err { error } = response {
-                log::error!("Error response from the websocket server {error}");
-                on_error();
-            }
-        }
-        ServerMessage::PriceUpdate { price_feed } => {
-            if 
-        }
-    }
-
-    Ok(())
-}
-
 
 fn expo_backoff(attempts: u32) -> Duration {
     Duration::from_millis(2_u64.pow(attempts) * 100)

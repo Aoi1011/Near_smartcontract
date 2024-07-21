@@ -1,4 +1,4 @@
-use std::{collections::HashMap, rc::Rc, time::Duration};
+use std::{cell::RefCell, collections::HashMap, rc::Rc, time::Duration};
 
 use chrono::{DateTime, Timelike, Utc};
 use pyth_sdk::PriceFeed;
@@ -9,7 +9,7 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::{
     error::PriceServiceError,
     resilient_web_socket::ResilientWebSocket,
-    types::{PriceIdInput, RpcPriceFeed, RpcPriceIdentifier},
+    types::{PriceIdInput, RpcPriceFeed},
 };
 
 #[derive(Debug, Default)]
@@ -86,7 +86,7 @@ where
 {
     http_client: Client,
     base_url: Url,
-    price_feed_callbacks: HashMap<RpcPriceIdentifier, Vec<Rc<F>>>,
+    price_feed_callbacks: HashMap<String, Vec<Rc<RefCell<F>>>>,
     ws_client: Option<ResilientWebSocket>,
     ws_endpoint: Url,
     price_feed_request_config: PriceFeedRequestConfig,
@@ -335,23 +335,26 @@ where
 
         let mut new_price_ids = Vec::new();
 
-        let callback = Rc::new(cb);
+        let callback = Rc::new(RefCell::new(cb));
         for id in price_ids {
             if !self.price_feed_callbacks.contains_key(id) {
                 self.price_feed_callbacks.insert(id.to_string(), Vec::new());
-                new_price_ids.push(id.to_string());
+                let id_input: [u8; 32] = id.as_bytes()[0..32].try_into().unwrap();
+                new_price_ids.push(PriceIdInput(id_input));
             }
 
             let price_feed_callbacks = self.price_feed_callbacks.get_mut(id).unwrap();
             price_feed_callbacks.push(callback.clone());
         }
 
-        let message = ClientMessage {
+        let message = ClientMessage::Subscribe {
             ids: new_price_ids,
-            r#type: ClientMessageType::Subscribe,
-            verbose: self.price_feed_request_config.verbose,
-            binary: self.price_feed_request_config.binary,
-            allow_out_of_order: self.price_feed_request_config.allow_out_of_order,
+            verbose: self.price_feed_request_config.verbose.unwrap_or(false),
+            binary: self.price_feed_request_config.binary.unwrap_or(false),
+            allow_out_of_order: self
+                .price_feed_request_config
+                .allow_out_of_order
+                .unwrap_or(false),
         };
 
         if let Some(ref mut ws_client) = self.ws_client {
@@ -366,15 +369,6 @@ where
     /// This function is called automatically upon subscribing to price feed updates.
     pub async fn start_web_socket(&mut self) {
         let endpoint = format!("{}ws", self.ws_endpoint);
-        // let on_error = |error: tokio_tungstenite::tungstenite::Error| {
-        //     log::error!("{error}");
-        // };
-        // let on_message = |message: String| {
-        //     log::info!("{message}");
-        // };
-        // let on_reconnect = || {
-        //     log::info!("Hello");
-        // };
         let mut web_socket = ResilientWebSocket::new(&endpoint);
         web_socket.start_web_socket().await;
 
@@ -394,40 +388,9 @@ where
             self.price_feed_callbacks.clear();
         }
     }
-
-    fn on_message(&mut self, data: String) -> Result<(), String> {
-        log::info!("Received message {}", data);
-
-        let message: ServerMessage = serde_json::from_str(&data).map_err(|e| {
-            log::error!("Error parsing message {data} as JSON");
-            log::error!("{e}");
-            on_error();
-            "".to_string()
-        })?;
-
-        match message {
-            ServerMessage::Response(response) => {
-                if let ServerResponseMessage::Err { error } = response {
-                    log::error!("Error response from the websocket server {error}");
-                    on_error();
-                }
-            }
-            ServerMessage::PriceUpdate { price_feed } => {
-                if let Some(callbacks) = self.price_feed_callbacks.get_mut(&price_feed.id) {
-                    for callback in callbacks {
-                        callback(price_feed.clone());
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
 }
 
-fn on_error() {}
-
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type")]
 enum ClientMessage {
     #[serde(rename = "subscribe")]
@@ -462,10 +425,6 @@ enum ServerResponseMessage {
     Err { error: String },
 }
 
-// fn on_error(error: tokio_tungstenite::tungstenite::Error) {}
-// fn on_message(message: String) {}
-// fn on_reconnect() {}
-
 #[cfg(test)]
 mod tests {
     use chrono::Duration;
@@ -474,7 +433,7 @@ mod tests {
 
     const ENDPOINT: &str = "https://hermes.pyth.network";
 
-    type Cb = fn(PriceFeed);
+    type Cb = fn(RpcPriceFeed);
 
     #[tokio::test]
     async fn test_http_endpoints() {
