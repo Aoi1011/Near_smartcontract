@@ -128,10 +128,7 @@ where
             }
         };
 
-        let base_url = match Url::parse(endpoint) {
-            Ok(url) => url,
-            Err(e) => return Err(PriceServiceError::BadUrl(e)),
-        };
+        let base_url = Url::parse(endpoint)?;
 
         let mut ws_endpoint = base_url.clone();
         match base_url.scheme() {
@@ -143,6 +140,7 @@ where
                 ))
             }
         };
+        ws_endpoint.join("/ws")?;
 
         Ok(Self {
             http_client: Client::new(),
@@ -370,8 +368,6 @@ where
     ///
     /// This function is called automatically upon subscribing to price feed updates.
     pub async fn start_web_socket(&mut self) {
-        // let endpoint = self.ws_endpoint.to_string();
-        // let endpoint = endpoint.replace("https", "wss");
         let mut web_socket = ResilientWebSocket::new(&self.ws_endpoint.to_string());
         web_socket.start_web_socket().await;
 

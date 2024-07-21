@@ -40,8 +40,8 @@ impl From<reqwest::Error> for PriceServiceError {
     }
 }
 
-// impl From<serde_json::Error> for PriceServiceError {
-//     fn from(value: serde_json::Error) -> Self {
-//         Self::Json(value)
-//     }
-// }
+impl From<ParseError> for PriceServiceError {
+    fn from(value: ParseError) -> Self {
+        Self::BadUrl(value)
+    }
+}
