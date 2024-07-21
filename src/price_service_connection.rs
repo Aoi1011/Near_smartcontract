@@ -6,7 +6,11 @@ use reqwest::{Client, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::{error::PriceServiceError, resilient_web_socket::ResilientWebSocket};
+use crate::{
+    error::PriceServiceError,
+    resilient_web_socket::ResilientWebSocket,
+    types::{PriceIdInput, RpcPriceFeed, RpcPriceIdentifier},
+};
 
 #[derive(Debug, Default)]
 pub struct PriceFeedRequestConfig {
@@ -38,20 +42,20 @@ pub struct PriceServiceConnectionConfig {
     price_feed_request_config: Option<PriceFeedRequestConfig>,
 }
 
-#[derive(Serialize)]
-enum ClientMessageType {
-    Subscribe,
-    Unsubscribe,
-}
+// #[derive(Serialize)]
+// enum ClientMessageType {
+//     Subscribe,
+//     Unsubscribe,
+// }
 
-#[derive(Serialize)]
-struct ClientMessage {
-    r#type: ClientMessageType,
-    ids: Vec<String>,
-    verbose: Option<bool>,
-    binary: Option<bool>,
-    allow_out_of_order: Option<bool>,
-}
+// #[derive(Serialize)]
+// struct ClientMessage {
+//     r#type: ClientMessageType,
+//     ids: Vec<String>,
+//     verbose: Option<bool>,
+//     binary: Option<bool>,
+//     allow_out_of_order: Option<bool>,
+// }
 
 enum ServerResponseStatus {
     Success,
@@ -69,11 +73,6 @@ struct ServerPriceUpdate {
     price_feed: String,
 }
 
-enum ServerMessage {
-    ServerResponse,
-    ServerPriceUpdate,
-}
-
 #[derive(Debug, Deserialize)]
 pub struct VaaResponse {
     #[serde(rename = "publishTime")]
@@ -81,27 +80,21 @@ pub struct VaaResponse {
     vaa: String,
 }
 
-pub struct PriceServiceConnection<F, E, M, R>
+pub struct PriceServiceConnection<F>
 where
-    F: FnMut(PriceFeed) + Send + Sync,
-    E: Fn(tokio_tungstenite::tungstenite::Error) + Send + Sync,
-    M: Fn(String) + Send + Sync,
-    R: Fn() + Send + Sync,
+    F: FnMut(RpcPriceFeed) + Send + Sync,
 {
     http_client: Client,
     base_url: Url,
-    price_feed_callbacks: HashMap<String, Vec<Rc<F>>>,
-    ws_client: Option<ResilientWebSocket<E, M, R>>,
+    price_feed_callbacks: HashMap<RpcPriceIdentifier, Vec<Rc<F>>>,
+    ws_client: Option<ResilientWebSocket>,
     ws_endpoint: Url,
     price_feed_request_config: PriceFeedRequestConfig,
 }
 
-impl<F, E, M, R> PriceServiceConnection<F, E, M, R>
+impl<F> PriceServiceConnection<F>
 where
-    F: FnMut(PriceFeed) + Send + Sync,
-    E: Fn(tokio_tungstenite::tungstenite::Error) + Send + Sync,
-    M: Fn(String) + Send + Sync,
-    R: Fn() + Send + Sync,
+    F: FnMut(RpcPriceFeed) + Send + Sync,
 {
     pub fn new(
         endpoint: &str,
@@ -373,16 +366,16 @@ where
     /// This function is called automatically upon subscribing to price feed updates.
     pub async fn start_web_socket(&mut self) {
         let endpoint = format!("{}ws", self.ws_endpoint);
-        let on_error = |error: tokio_tungstenite::tungstenite::Error| {
-            log::error!("{error}");
-        };
-        let on_message = |message: String| {
-            log::info!("{message}");
-        };
-        let on_reconnect = || {
-            log::info!("Hello");
-        };
-        let mut web_socket = ResilientWebSocket::new(&endpoint, on_error, on_message, on_reconnect);
+        // let on_error = |error: tokio_tungstenite::tungstenite::Error| {
+        //     log::error!("{error}");
+        // };
+        // let on_message = |message: String| {
+        //     log::info!("{message}");
+        // };
+        // let on_reconnect = || {
+        //     log::info!("Hello");
+        // };
+        let mut web_socket = ResilientWebSocket::new(&endpoint);
         web_socket.start_web_socket().await;
 
         self.ws_client = Some(web_socket);
@@ -401,6 +394,72 @@ where
             self.price_feed_callbacks.clear();
         }
     }
+
+    fn on_message(&mut self, data: String) -> Result<(), String> {
+        log::info!("Received message {}", data);
+
+        let message: ServerMessage = serde_json::from_str(&data).map_err(|e| {
+            log::error!("Error parsing message {data} as JSON");
+            log::error!("{e}");
+            on_error();
+            "".to_string()
+        })?;
+
+        match message {
+            ServerMessage::Response(response) => {
+                if let ServerResponseMessage::Err { error } = response {
+                    log::error!("Error response from the websocket server {error}");
+                    on_error();
+                }
+            }
+            ServerMessage::PriceUpdate { price_feed } => {
+                if let Some(callbacks) = self.price_feed_callbacks.get_mut(&price_feed.id) {
+                    for callback in callbacks {
+                        callback(price_feed.clone());
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn on_error() {}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(tag = "type")]
+enum ClientMessage {
+    #[serde(rename = "subscribe")]
+    Subscribe {
+        ids: Vec<PriceIdInput>,
+        #[serde(default)]
+        verbose: bool,
+        #[serde(default)]
+        binary: bool,
+        #[serde(default)]
+        allow_out_of_order: bool,
+    },
+    #[serde(rename = "unsubscribe")]
+    Unsubscribe { ids: Vec<PriceIdInput> },
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(tag = "type")]
+enum ServerMessage {
+    #[serde(rename = "response")]
+    Response(ServerResponseMessage),
+    #[serde(rename = "price_update")]
+    PriceUpdate { price_feed: RpcPriceFeed },
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(tag = "status")]
+enum ServerResponseMessage {
+    #[serde(rename = "success")]
+    Success,
+    #[serde(rename = "error")]
+    Err { error: String },
 }
 
 // fn on_error(error: tokio_tungstenite::tungstenite::Error) {}

@@ -4,8 +4,11 @@ use std::{
 };
 
 use futures_util::{stream::FusedStream, Future, SinkExt, StreamExt};
+use serde::Deserialize;
 use tokio::net::TcpStream;
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
+
+use crate::types::{PriceIdInput, RpcPriceFeed};
 
 const PING_TIMEOUT_DURATION: Duration = Duration::from_secs(33); // 30s + 3s for delays
 
@@ -17,38 +20,22 @@ const PING_TIMEOUT_DURATION: Duration = Duration::from_secs(33); // 30s + 3s for
 ///
 /// This class also logs events if logger is given and by replacing onError method you can handle
 /// connection errors yourself (e.g: do not retry and close the connection).
-pub struct ResilientWebSocket<E, M, R>
-where
-    E: Fn(tokio_tungstenite::tungstenite::Error) + Send + Sync,
-    M: Fn(String) + Send + Sync,
-    R: Fn() + Send + Sync,
-{
+pub struct ResilientWebSocket {
     endpoint: String,
     ws_client: Option<WebSocketStream<MaybeTlsStream<TcpStream>>>,
     ws_user_closed: bool,
     ws_failed_attempts: usize,
     ping_timeout: Option<Instant>,
-    on_error: E,
-    on_message: M,
-    on_reconnect: R,
 }
 
-impl<E, M, R> ResilientWebSocket<E, M, R>
-where
-    E: Fn(tokio_tungstenite::tungstenite::Error) + Send + Sync,
-    M: Fn(String) + Send + Sync,
-    R: Fn() + Send + Sync,
-{
-    pub fn new(endpoint: &str, on_error: E, on_message: M, on_reconnect: R) -> Self {
+impl ResilientWebSocket {
+    pub fn new(endpoint: &str) -> Self {
         Self {
             endpoint: endpoint.to_string(),
             ws_client: None,
             ws_user_closed: true,
             ws_failed_attempts: 0,
             ping_timeout: None,
-            on_error,
-            on_message,
-            on_reconnect,
         }
     }
 
@@ -172,6 +159,67 @@ where
         self.ws_user_closed = true;
     }
 }
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(tag = "type")]
+enum ClientMessage {
+    #[serde(rename = "subscribe")]
+    Subscribe {
+        ids: Vec<PriceIdInput>,
+        #[serde(default)]
+        verbose: bool,
+        #[serde(default)]
+        binary: bool,
+        #[serde(default)]
+        allow_out_of_order: bool,
+    },
+    #[serde(rename = "unsubscribe")]
+    Unsubscribe { ids: Vec<PriceIdInput> },
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(tag = "type")]
+enum ServerMessage {
+    #[serde(rename = "response")]
+    Response(ServerResponseMessage),
+    #[serde(rename = "price_update")]
+    PriceUpdate { price_feed: RpcPriceFeed },
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(tag = "status")]
+enum ServerResponseMessage {
+    #[serde(rename = "success")]
+    Success,
+    #[serde(rename = "error")]
+    Err { error: String },
+}
+
+fn on_message(data: String) -> Result<(), String> {
+    log::info!("Received message {}", data);
+
+    let message: ServerMessage = serde_json::from_str(&data).map_err(|e| {
+        log::error!("Error parsing message {data} as JSON");
+        log::error!("{e}");
+        on_error();
+        "".to_string()
+    })?;
+
+    match message {
+        ServerMessage::Response(response) => {
+            if let ServerResponseMessage::Err { error } = response {
+                log::error!("Error response from the websocket server {error}");
+                on_error();
+            }
+        }
+        ServerMessage::PriceUpdate { price_feed } => {
+            if 
+        }
+    }
+
+    Ok(())
+}
+
 
 fn expo_backoff(attempts: u32) -> Duration {
     Duration::from_millis(2_u64.pow(attempts) * 100)
