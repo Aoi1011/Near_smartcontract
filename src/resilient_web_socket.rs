@@ -75,6 +75,16 @@ impl ResilientWebSocket {
         }
     }
 
+    // async fn listen(&mut self) {
+    //     let ws_stream = self.ws_client.unwrap();
+    //     while let Some(message) = ws_stream.next().await {
+    //         match message {
+    //             Ok(Message::Text(text)) => {
+    //             }
+    //         }
+    //     }
+    // }
+
     /// Heartbeat is only enabled in node clients because they support handling
     /// ping-pong events.
     ///
