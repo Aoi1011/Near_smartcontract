@@ -322,7 +322,11 @@ where
     /// Also, it won't throw any exception if given price ids are invalid or connection errors. Instead,
     /// it calls `connection.onWsError`. If you want to handle the errors you should set the
     /// `onWsError` function to your custom error handler.
-    pub async fn subscribe_price_feed_updates(&mut self, price_ids: &[&str], cb: F) {
+    pub async fn subscribe_price_feed_updates(
+        &mut self,
+        price_ids: &[&str],
+        cb: F,
+    ) -> Result<(), PriceServiceError> {
         if self.ws_client.is_none() {
             let (tx, rx) = tokio::sync::oneshot::channel::<()>();
             self.start_web_socket(tx).await;
@@ -367,12 +371,19 @@ where
         log::info!("WS_Client: {}", self.ws_client.is_some());
 
         if let Some(ref mut ws_client) = self.ws_client {
-            let mut ws_client = ws_client.lock().await;
-            log::info!("Sending message");
-            ws_client
-                .send(Message::Text(serde_json::to_string(&message).unwrap()))
-                .await;
+            let ws_client = ws_client.clone();
+            let message = serde_json::to_string(&message)
+                .map_err(|e| PriceServiceError::NotJson(e.to_string()))?;
+
+            tokio::spawn(async move {
+                log::info!("Before sending message");
+                let mut ws_client = ws_client.lock().await;
+                log::info!("Sending message");
+                ws_client.send(Message::Text(message)).await;
+            });
         }
+
+        Ok(())
     }
 
     /// Starts connection websocket.

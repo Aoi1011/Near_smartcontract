@@ -18,7 +18,7 @@ async fn main() {
     // let mut total_counter = 0;
 
     let price_ids: Vec<&str> = ids[0..2].iter().map(|price_id| price_id.as_str()).collect();
-    connection
+    match connection
         .subscribe_price_feed_updates(&price_ids, |price_feed| {
             assert!(price_feed.metadata.is_some());
             assert!(price_feed.vaa.is_some());
@@ -31,9 +31,17 @@ async fn main() {
             //     .or_insert(1);
             // total_counter += 1;
         })
-        .await;
+        .await
+    {
+        Ok(res) => {}
+        Err(e) => {
+            log::error!("Error: {e}");
+        }
+    }
 
-    // tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+    }
     // connection.close_web_socket().await;
 
     // assert_eq!(total_counter, 30);
