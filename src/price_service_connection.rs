@@ -365,7 +365,6 @@ where
         log::info!("WS_Client: {}", self.ws_client.is_some());
 
         if let Some(ref mut ws_client) = self.ws_client {
-            let ws_client = ws_client.clone();
             let mut ws_client = ws_client.lock().await;
             log::info!("Sending message");
             ws_client
@@ -386,9 +385,11 @@ where
         self.ws_client = Some(web_socket.clone());
 
         let w_socket_clone = web_socket.clone();
-        let mut socket = w_socket_clone.lock().await;
 
-        tokio::spawn(async move { socket.start_web_socket().await });
+        tokio::spawn(async move {
+            let mut ws = w_socket_clone.lock().await;
+            ws.start_web_socket().await;
+        });
     }
 
     /// Closes connection websocket.
@@ -606,27 +607,41 @@ mod tests {
             .expect("Failed to get latest vaas");
         assert!(!ids.is_empty());
 
-        let mut counter = HashMap::new();
-        let mut total_counter = 0;
+        let counter = Arc::new(TokioMutex::new(HashMap::new()));
+        let total_counter = Arc::new(TokioMutex::new(0));
 
         let price_ids: Vec<&str> = ids[0..2].iter().map(|price_id| price_id.as_str()).collect();
+
+        let counter_clone = counter.clone();
+        let total_counter_clone = total_counter.clone();
+
         connection
-            .subscribe_price_feed_updates(&price_ids, |price_feed| {
+            .subscribe_price_feed_updates(&price_ids, move |price_feed| {
                 assert!(price_feed.metadata.is_some());
                 assert!(price_feed.vaa.is_some());
 
-                counter
-                    .entry(price_feed.id)
-                    .and_modify(|counter| *counter += 1)
-                    .or_insert(1);
-                total_counter += 1;
+                let counter = counter_clone.clone();
+                let total_counter = total_counter_clone.clone();
+
+                tokio::spawn(async move {
+                    let mut counter = counter.lock().await;
+                    let mut total_counter = total_counter.lock().await;
+
+                    counter
+                        .entry(price_feed.id)
+                        .and_modify(|counter| *counter += 1)
+                        .or_insert(1);
+                    *total_counter += 1;
+                });
             })
             .await;
 
         tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
         connection.close_web_socket().await;
 
-        assert_eq!(total_counter, 30);
+        let total_counter = total_counter.clone();
+        let total_counter = total_counter.lock().await;
+        assert_eq!(*total_counter, 30);
 
         // for id in ids {
         //     assert!(counter.get(&id).is_some());
