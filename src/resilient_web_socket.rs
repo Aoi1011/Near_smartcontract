@@ -73,7 +73,7 @@ where
         }
     }
 
-    pub async fn start_web_socket(&mut self) {
+    pub async fn start_web_socket(&mut self, tx: Option<tokio::sync::oneshot::Sender<()>>) {
         let ws_client = self.ws_client.clone();
         let mut client = ws_client.lock().await;
         if client.is_some() {
@@ -86,6 +86,9 @@ where
                 *client = Some(ws_stream);
                 self.ws_user_closed = false;
                 self.ws_failed_attempts = 0;
+                if let Some(tx) = tx {
+                    let _ = tx.send(());
+                }
                 self.listen().await
             }
             Err(e) => {
@@ -196,7 +199,7 @@ where
                 return;
             }
 
-            self.start_web_socket().await;
+            self.start_web_socket(None).await;
             self.wait_for_maybe_ready_websocket().await;
 
             let ws_client = self.ws_client.clone();

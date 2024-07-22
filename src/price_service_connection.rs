@@ -324,7 +324,9 @@ where
     /// `onWsError` function to your custom error handler.
     pub async fn subscribe_price_feed_updates(&mut self, price_ids: &[&str], cb: F) {
         if self.ws_client.is_none() {
-            self.start_web_socket().await;
+            let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+            self.start_web_socket(tx).await;
+            let _ = rx.await;
         }
 
         let price_ids: Vec<&str> = price_ids
@@ -376,7 +378,7 @@ where
     /// Starts connection websocket.
     ///
     /// This function is called automatically upon subscribing to price feed updates.
-    pub async fn start_web_socket(&mut self) {
+    pub async fn start_web_socket(&mut self, tx: tokio::sync::oneshot::Sender<()>) {
         let endpoint = format!("{}ws", self.ws_endpoint);
         let web_socket = Arc::new(TokioMutex::new(ResilientWebSocket::new(
             &endpoint,
@@ -388,7 +390,7 @@ where
 
         tokio::spawn(async move {
             let mut ws = w_socket_clone.lock().await;
-            ws.start_web_socket().await;
+            ws.start_web_socket(Some(tx)).await;
         });
     }
 
