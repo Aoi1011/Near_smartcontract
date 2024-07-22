@@ -1,8 +1,6 @@
 use std::{
-    cell::RefCell,
     collections::HashMap,
     pin::Pin,
-    rc::Rc,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -10,6 +8,7 @@ use std::{
 use futures_util::{stream::FusedStream, Future, SinkExt, StreamExt};
 use serde::Deserialize;
 use tokio::net::TcpStream;
+use tokio::sync::Mutex as TokioMutex;
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 
 use crate::types::{PriceIdInput, RpcPriceFeed};
@@ -24,22 +23,30 @@ const PING_TIMEOUT_DURATION: Duration = Duration::from_secs(33); // 30s + 3s for
 ///
 /// This class also logs events if logger is given and by replacing onError method you can handle
 /// connection errors yourself (e.g: do not retry and close the connection).
-pub struct ResilientWebSocket {
+pub struct ResilientWebSocket<F>
+where
+    F: FnMut(RpcPriceFeed) + Send + Sync,
+{
     endpoint: String,
-    ws_client: Arc<Mutex<Option<WebSocketStream<MaybeTlsStream<TcpStream>>>>>,
+    ws_client: Arc<TokioMutex<Option<WebSocketStream<MaybeTlsStream<TcpStream>>>>>,
     ws_user_closed: bool,
     ws_failed_attempts: u32,
     ping_timeout: Option<Instant>,
+    price_feed_callbacks: HashMap<String, Vec<Arc<Mutex<F>>>>,
 }
 
-impl ResilientWebSocket {
-    pub fn new(endpoint: &str) -> Self {
+impl<F> ResilientWebSocket<F>
+where
+    F: FnMut(RpcPriceFeed) + Send + Sync,
+{
+    pub fn new(endpoint: &str, price_feed_callbacks: &HashMap<String, Vec<Arc<Mutex<F>>>>) -> Self {
         Self {
             endpoint: endpoint.to_string(),
-            ws_client: Arc::new(Mutex::new(None)),
+            ws_client: Arc::new(TokioMutex::new(None)),
             ws_user_closed: true,
             ws_failed_attempts: 0,
             ping_timeout: None,
+            price_feed_callbacks: price_feed_callbacks.clone(),
         }
     }
 
@@ -49,7 +56,7 @@ impl ResilientWebSocket {
         self.wait_for_maybe_ready_websocket().await;
 
         let ws_client = self.ws_client.clone();
-        let mut ws_stream = ws_client.lock().unwrap();
+        let mut ws_stream = ws_client.lock().await;
 
         if let Some(ref mut stream) = *ws_stream {
             let (mut write, _read) = stream.split();
@@ -66,14 +73,9 @@ impl ResilientWebSocket {
         }
     }
 
-    pub async fn start_web_socket<F>(
-        &mut self,
-        price_feed_callbacks: &HashMap<String, Vec<Rc<RefCell<F>>>>,
-    ) where
-        F: FnMut(RpcPriceFeed) + Send + Sync,
-    {
+    pub async fn start_web_socket(&mut self) {
         let ws_client = self.ws_client.clone();
-        let mut client = ws_client.lock().unwrap();
+        let mut client = ws_client.lock().await;
         if client.is_some() {
             return;
         }
@@ -84,8 +86,7 @@ impl ResilientWebSocket {
                 *client = Some(ws_stream);
                 self.ws_user_closed = false;
                 self.ws_failed_attempts = 0;
-                // self.heartbeat().await;
-                self.listen(price_feed_callbacks);
+                self.listen().await
             }
             Err(e) => {
                 log::error!("Websocket connection failed: {e}");
@@ -93,12 +94,9 @@ impl ResilientWebSocket {
         }
     }
 
-    async fn listen<F>(&mut self, price_feed_callbacks: &HashMap<String, Vec<Rc<RefCell<F>>>>)
-    where
-        F: FnMut(RpcPriceFeed) + Send + Sync,
-    {
+    async fn listen(&mut self) {
         let ws_client = self.ws_client.clone();
-        let mut ws_stream = ws_client.lock().unwrap();
+        let mut ws_stream = ws_client.lock().await;
 
         if let Some(ref mut stream) = *ws_stream {
             let (mut sender, mut receiver) = stream.split();
@@ -107,7 +105,7 @@ impl ResilientWebSocket {
                     Some(message) = receiver.next() => {
                         match message {
                             Ok(Message::Text(text)) => {
-                                on_message(text, price_feed_callbacks);
+                                on_message(text, &self.price_feed_callbacks);
                             }
                             Ok(Message::Ping(_)) => {
                                 sender.send(Message::Pong(vec![])).await.unwrap();
@@ -162,7 +160,7 @@ impl ResilientWebSocket {
         let mut waited_time = Duration::from_millis(0);
 
         let ws_client = self.ws_client.clone();
-        let mut ws_stream = ws_client.lock().unwrap();
+        let mut ws_stream = ws_client.lock().await;
 
         if let Some(ref mut stream) = *ws_stream {
             if !stream.is_terminated() {
@@ -181,7 +179,7 @@ impl ResilientWebSocket {
     }
 
     async fn handle_close(&mut self) {
-        self.ws_client = Arc::new(Mutex::new(None));
+        self.ws_client = Arc::new(TokioMutex::new(None));
         if !self.ws_user_closed {
             self.ws_failed_attempts += 1;
             let wait_time = expo_backoff(self.ws_failed_attempts);
@@ -201,7 +199,9 @@ impl ResilientWebSocket {
             self.start_web_socket().await;
             self.wait_for_maybe_ready_websocket().await;
 
-            if self.ws_client.is_none() {
+            let ws_client = self.ws_client.clone();
+            let ws_stream = ws_client.lock().await;
+            if ws_stream.is_none() {
                 log::error!("Couldn't recennect to websocket");
             } else {
                 log::info!("Reconnected to websocket.");
@@ -210,9 +210,12 @@ impl ResilientWebSocket {
     }
 
     pub async fn close_web_socket(&mut self) {
-        if let Some(ref mut client) = self.ws_client {
-            client.close(None).await.unwrap();
-            self.ws_client = None;
+        let ws_client = self.ws_client.clone();
+        let mut ws_stream = ws_client.lock().await;
+
+        if let Some(ref mut stream) = *ws_stream {
+            stream.close(None).await.unwrap();
+            self.ws_client = Arc::new(TokioMutex::new(None));
         }
 
         self.ws_user_closed = true;
@@ -221,7 +224,7 @@ impl ResilientWebSocket {
 
 fn on_message<F>(
     data: String,
-    price_feed_callbacks: &HashMap<String, Vec<Rc<RefCell<F>>>>,
+    price_feed_callbacks: &HashMap<String, Vec<Arc<Mutex<F>>>>,
 ) -> Result<(), String>
 where
     F: FnMut(RpcPriceFeed) + Send + Sync,
@@ -247,8 +250,9 @@ where
             match price_feed_callbacks.get(&id) {
                 Some(callbacks) => {
                     for callback in callbacks {
-                        let mut callback_ref = callback.borrow_mut();
-                        callback_ref(price_feed.clone());
+                        // let mut callback = callback.borrow_mut();
+                        let mut callback = callback.lock().unwrap();
+                        callback(price_feed.clone());
                     }
                 }
                 None => {

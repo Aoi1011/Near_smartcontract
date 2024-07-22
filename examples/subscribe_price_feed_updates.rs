@@ -20,8 +20,8 @@ async fn main() {
     let price_ids: Vec<&str> = ids[0..2].iter().map(|price_id| price_id.as_str()).collect();
     connection
         .subscribe_price_feed_updates(&price_ids, |price_feed| {
-            assert!(price_feed.get_metadata().is_some());
-            assert!(price_feed.get_vaa().is_some());
+            assert!(price_feed.metadata.is_some());
+            assert!(price_feed.vaa.is_some());
 
             log::info!("Price feed: {price_feed:?}");
 
