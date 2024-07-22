@@ -28,39 +28,38 @@ where
     F: FnMut(RpcPriceFeed) + Send + Sync,
 {
     endpoint: String,
-    ws_client: Arc<TokioMutex<Option<WebSocketStream<MaybeTlsStream<TcpStream>>>>>,
+    ws_client: Option<Arc<TokioMutex<WebSocketStream<MaybeTlsStream<TcpStream>>>>>,
     ws_user_closed: bool,
     ws_failed_attempts: u32,
     ping_timeout: Option<Instant>,
-    price_feed_callbacks: HashMap<String, Vec<Arc<Mutex<F>>>>,
+    price_feed_callbacks: Arc<TokioMutex<HashMap<String, Vec<Arc<Mutex<F>>>>>>,
 }
 
 impl<F> ResilientWebSocket<F>
 where
-    F: FnMut(RpcPriceFeed) + Send + Sync,
+    F: FnMut(RpcPriceFeed) + Send + Sync + 'static,
 {
     pub fn new(endpoint: &str, price_feed_callbacks: &HashMap<String, Vec<Arc<Mutex<F>>>>) -> Self {
         Self {
             endpoint: endpoint.to_string(),
-            ws_client: Arc::new(TokioMutex::new(None)),
+            ws_client: None,
             ws_user_closed: true,
             ws_failed_attempts: 0,
             ping_timeout: None,
-            price_feed_callbacks: price_feed_callbacks.clone(),
+            price_feed_callbacks: Arc::new(TokioMutex::new(price_feed_callbacks.clone())),
         }
     }
 
     pub async fn send(&mut self, data: Message) {
         log::info!("Sending {}", data.to_string());
 
-        self.wait_for_maybe_ready_websocket().await;
+        // self.wait_for_maybe_ready_websocket().await;
 
-        let ws_client = self.ws_client.clone();
-        let mut ws_stream = ws_client.lock().await;
+        if let Some(ws_client) = &self.ws_client {
+            let ws_client = ws_client.clone();
+            let mut ws_stream = ws_client.lock().await;
 
-        if let Some(ref mut stream) = *ws_stream {
-            let (mut write, _read) = stream.split();
-            match write.send(data).await {
+            match ws_stream.send(data).await {
                 Ok(_) => {
                     log::info!("Sent");
                 }
@@ -74,64 +73,68 @@ where
     }
 
     pub async fn start_web_socket(&mut self, tx: Option<tokio::sync::oneshot::Sender<()>>) {
-        let ws_client = self.ws_client.clone();
-        let mut client = ws_client.lock().await;
-        if client.is_some() {
-            return;
-        }
-        log::info!("Creating Web Socket client");
-
-        match connect_async(&self.endpoint).await {
-            Ok((ws_stream, _)) => {
-                *client = Some(ws_stream);
-                self.ws_user_closed = false;
-                self.ws_failed_attempts = 0;
-                if let Some(tx) = tx {
-                    let _ = tx.send(());
-                }
-                self.listen().await
+        match self.ws_client {
+            Some(_) => {
+                return;
             }
-            Err(e) => {
-                log::error!("Websocket connection failed: {e}");
+            None => {
+                log::info!("Creating Web Socket client");
+
+                // let ws_client = self.ws_client.clone();
+                // let mut client = ws_client.lock().await;
+                match connect_async(&self.endpoint).await {
+                    Ok((ws_stream, _)) => {
+                        self.ws_client = Some(Arc::new(TokioMutex::new(ws_stream)));
+                        self.ws_user_closed = false;
+                        self.ws_failed_attempts = 0;
+                        if let Some(tx) = tx {
+                            let _ = tx.send(());
+                        }
+                        self.listen().await
+                    }
+                    Err(e) => {
+                        log::error!("Websocket connection failed: {e}");
+                    }
+                }
             }
         }
     }
 
     async fn listen(&mut self) {
-        let ws_client = self.ws_client.clone();
-        let mut ws_stream = ws_client.lock().await;
+        let price_feed_callbacks = self.price_feed_callbacks.clone();
 
-        if let Some(ref mut stream) = *ws_stream {
-            let (mut sender, mut receiver) = stream.split();
-            loop {
-                tokio::select! {
-                    Some(message) = receiver.next() => {
-                        match message {
-                            Ok(Message::Text(text)) => {
-                                on_message(text, &self.price_feed_callbacks);
-                            }
-                            Ok(Message::Ping(_)) => {
-                                sender.send(Message::Pong(vec![])).await.unwrap();
-                            }
-                            Ok(Message::Pong(_)) => {
-                                // sender.send(Message::Pong(vec![])).await.unwrap();
-                            }
-                            Ok(Message::Close(_)) => {
-                               self.handle_close().await;
-                                break;
-                            }
-                            Ok(Message::Binary(_)) | Ok(Message::Frame(_)) => {
-                                unimplemented!()
-                            }
-                            Err(e) => {
-                                on_error(e.to_string());
-                                self.handle_close().await;
-                                break;
-                            }
+        if let Some(ws_client) = &self.ws_client {
+            let ws_client = ws_client.clone();
+
+            tokio::spawn(async move {
+                let mut ws_stream = ws_client.lock().await;
+
+                while let Some(message) = ws_stream.next().await {
+                    match message {
+                        Ok(Message::Text(text)) => {
+                            on_message(text, &price_feed_callbacks).await;
+                        }
+                        Ok(Message::Ping(_)) => {
+                            ws_stream.send(Message::Pong(vec![])).await.unwrap();
+                        }
+                        Ok(Message::Pong(_)) => {
+                            // sender.send(Message::Pong(vec![])).await.unwrap();
+                        }
+                        Ok(Message::Close(_)) => {
+                            // self.handle_close().await;
+                            break;
+                        }
+                        Ok(Message::Binary(_)) | Ok(Message::Frame(_)) => {
+                            unimplemented!()
+                        }
+                        Err(e) => {
+                            on_error(e.to_string());
+                            // self.handle_close().await;
+                            break;
                         }
                     }
                 }
-            }
+            });
         }
     }
 
@@ -162,10 +165,11 @@ where
     async fn wait_for_maybe_ready_websocket(&mut self) {
         let mut waited_time = Duration::from_millis(0);
 
-        let ws_client = self.ws_client.clone();
-        let mut ws_stream = ws_client.lock().await;
+        // let ws_client = self.ws_client.clone();
+        if let Some(ws_client) = &self.ws_client {
+            let mut stream = ws_client.lock().await;
+            log::info!("wait_for_maybe_ready: After locking ws_client");
 
-        if let Some(ref mut stream) = *ws_stream {
             if !stream.is_terminated() {
                 stream.close(None).await.unwrap();
                 return;
@@ -182,7 +186,7 @@ where
     }
 
     async fn handle_close(&mut self) {
-        self.ws_client = Arc::new(TokioMutex::new(None));
+        self.ws_client = None;
         if !self.ws_user_closed {
             self.ws_failed_attempts += 1;
             let wait_time = expo_backoff(self.ws_failed_attempts);
@@ -202,9 +206,9 @@ where
             self.start_web_socket(None).await;
             self.wait_for_maybe_ready_websocket().await;
 
-            let ws_client = self.ws_client.clone();
-            let ws_stream = ws_client.lock().await;
-            if ws_stream.is_none() {
+            // let ws_client = self.ws_client.clone();
+            // let ws_stream = ws_client.lock().await;
+            if self.ws_client.is_none() {
                 log::error!("Couldn't recennect to websocket");
             } else {
                 log::info!("Reconnected to websocket.");
@@ -213,21 +217,21 @@ where
     }
 
     pub async fn close_web_socket(&mut self) {
-        let ws_client = self.ws_client.clone();
-        let mut ws_stream = ws_client.lock().await;
+        if let Some(ws_client) = &self.ws_client {
+            let ws_client = ws_client.clone();
+            let mut ws_stream = ws_client.lock().await;
 
-        if let Some(ref mut stream) = *ws_stream {
-            stream.close(None).await.unwrap();
-            self.ws_client = Arc::new(TokioMutex::new(None));
+            ws_stream.close(None).await.unwrap();
+            self.ws_client = None;
         }
 
         self.ws_user_closed = true;
     }
 }
 
-fn on_message<F>(
+async fn on_message<F>(
     data: String,
-    price_feed_callbacks: &HashMap<String, Vec<Arc<Mutex<F>>>>,
+    price_feed_callbacks: &Arc<TokioMutex<HashMap<String, Vec<Arc<Mutex<F>>>>>>,
 ) -> Result<(), String>
 where
     F: FnMut(RpcPriceFeed) + Send + Sync,
@@ -250,6 +254,7 @@ where
         }
         ServerMessage::PriceUpdate { price_feed } => {
             let id = String::from_utf8(price_feed.id.0.to_vec()).unwrap();
+            let price_feed_callbacks = price_feed_callbacks.lock().await;
             match price_feed_callbacks.get(&id) {
                 Some(callbacks) => {
                     for callback in callbacks {
