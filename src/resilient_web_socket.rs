@@ -185,28 +185,6 @@ where
         }
     }
 
-    // async fn wait_for_maybe_ready_websocket(&mut self) {
-    //     let mut waited_time = Duration::from_millis(0);
-
-    //     // let ws_client = self.ws_client.clone();
-    //     if let Some(ws_client) = &self.ws_client {
-    //         let mut stream = ws_client.lock().await;
-
-    //         if !stream.is_terminated() {
-    //             stream.close(None).await.unwrap();
-    //             return;
-    //         }
-
-    //         if waited_time > Duration::from_secs(5) {
-    //             stream.close(None).await.unwrap();
-    //             return;
-    //         } else {
-    //             waited_time += Duration::from_millis(10);
-    //             tokio::time::sleep(Duration::from_millis(10)).await;
-    //         }
-    //     }
-    // }
-
     async fn handle_close(&mut self) {
         self.ws_client = None;
         if !self.ws_user_closed {
