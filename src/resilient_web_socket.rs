@@ -53,7 +53,7 @@ where
     pub async fn send(&mut self, data: Message) {
         log::info!("Sending {}", data.to_string());
 
-        // self.wait_for_maybe_ready_websocket().await;
+        self.wait_for_maybe_ready_websocket().await;
 
         if let Some(ws_client) = &self.ws_client {
             let ws_client = ws_client.clone();
@@ -72,7 +72,11 @@ where
         }
     }
 
-    pub async fn start_web_socket(&mut self, tx: Option<tokio::sync::oneshot::Sender<()>>) {
+    pub async fn start_web_socket(
+        &mut self,
+        tx: Option<tokio::sync::oneshot::Sender<()>>,
+        initial_message: String,
+    ) {
         match self.ws_client {
             Some(_) => {
                 return;
@@ -87,10 +91,11 @@ where
                         self.ws_client = Some(Arc::new(TokioMutex::new(ws_stream)));
                         self.ws_user_closed = false;
                         self.ws_failed_attempts = 0;
+                        self.send(Message::Text(initial_message.to_string())).await;
                         if let Some(tx) = tx {
                             let _ = tx.send(());
                         }
-                        self.listen().await
+                        self.listen().await;
                     }
                     Err(e) => {
                         log::error!("Websocket connection failed: {e}");
@@ -203,7 +208,8 @@ where
                 return;
             }
 
-            self.start_web_socket(None).await;
+            todo!();
+            // self.start_web_socket(None, "Hello").await;
             self.wait_for_maybe_ready_websocket().await;
 
             // let ws_client = self.ws_client.clone();

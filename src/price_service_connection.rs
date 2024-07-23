@@ -327,12 +327,6 @@ where
         price_ids: &[&str],
         cb: F,
     ) -> Result<(), PriceServiceError> {
-        if self.ws_client.is_none() {
-            let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-            self.start_web_socket(tx).await;
-            let _ = rx.await;
-        }
-
         let price_ids: Vec<&str> = price_ids
             .iter()
             .map(|price_id| {
@@ -368,20 +362,29 @@ where
                 .unwrap_or(false),
         };
 
-        log::info!("WS_Client: {}", self.ws_client.is_some());
-
-        if let Some(ref mut ws_client) = self.ws_client {
-            let ws_client = ws_client.clone();
-            let message = serde_json::to_string(&message)
+        if self.ws_client.is_none() {
+            let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+            let initial_message = serde_json::to_string(&message)
                 .map_err(|e| PriceServiceError::NotJson(e.to_string()))?;
 
-            tokio::spawn(async move {
-                log::info!("Before sending message");
-                let mut ws_client = ws_client.lock().await;
-                log::info!("Sending message");
-                ws_client.send(Message::Text(message)).await;
-            });
+            self.start_web_socket(tx, initial_message).await;
+            let _ = rx.await;
         }
+
+        // log::info!("WS_Client: {}", self.ws_client.is_some());
+
+        // if let Some(ref mut ws_client) = self.ws_client {
+        //     let ws_client = ws_client.clone();
+        //     let message = serde_json::to_string(&message)
+        //         .map_err(|e| PriceServiceError::NotJson(e.to_string()))?;
+
+        //     tokio::spawn(async move {
+        //         log::info!("Before sending message");
+        //         let mut ws_client = ws_client.lock().await;
+        //         log::info!("Sending message");
+        //         ws_client.send(Message::Text(message)).await;
+        //     });
+        // }
 
         Ok(())
     }
@@ -389,7 +392,11 @@ where
     /// Starts connection websocket.
     ///
     /// This function is called automatically upon subscribing to price feed updates.
-    pub async fn start_web_socket(&mut self, tx: tokio::sync::oneshot::Sender<()>) {
+    pub async fn start_web_socket(
+        &mut self,
+        tx: tokio::sync::oneshot::Sender<()>,
+        initial_message: String,
+    ) {
         let endpoint = format!("{}ws", self.ws_endpoint);
         let web_socket = Arc::new(TokioMutex::new(ResilientWebSocket::new(
             &endpoint,
@@ -401,7 +408,7 @@ where
 
         tokio::spawn(async move {
             let mut ws = w_socket_clone.lock().await;
-            ws.start_web_socket(Some(tx)).await;
+            ws.start_web_socket(Some(tx), initial_message).await;
         });
     }
 
