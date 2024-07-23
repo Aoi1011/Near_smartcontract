@@ -392,6 +392,33 @@ where
         Ok(())
     }
 
+    /// Unsubscribe from updates for given price ids.
+    ///
+    /// It will close the websocket connection if it's not subscribed to any price feed updates anymore.
+    /// Also, it won't throw any exception if given price ids are invalid or connection errors. Instead,
+    /// it calls `connection.onWsError`. If you want to handle the errors you should set the
+    /// `onWsError` function to your custom error handler.
+    pub async fn unsubscribe_price_feed_updates(&mut self, price_ids: &[&str], cb: Option<F>) {
+        let message = ClientMessage::Subscribe {
+            ids: new_price_ids,
+            verbose: self.price_feed_request_config.verbose.unwrap_or(false),
+            binary: self.price_feed_request_config.binary.unwrap_or(false),
+            allow_out_of_order: self
+                .price_feed_request_config
+                .allow_out_of_order
+                .unwrap_or(false),
+        };
+
+        if self.ws_client.is_none() {
+            let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+            let initial_message = serde_json::to_string(&message)
+                .map_err(|e| PriceServiceError::NotJson(e.to_string()))?;
+
+            self.start_web_socket(tx, initial_message).await;
+            let _ = rx.await;
+        }
+    }
+
     /// Starts connection websocket.
     ///
     /// This function is called automatically upon subscribing to price feed updates.
