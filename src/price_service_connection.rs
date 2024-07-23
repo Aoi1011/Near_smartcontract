@@ -6,7 +6,7 @@ use std::{
 
 use chrono::{DateTime, Timelike, Utc};
 use pyth_sdk::PriceFeed;
-use reqwest::{Client, StatusCode, Url};
+use reqwest::{Client, ClientBuilder, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex as TokioMutex;
 use tokio_tungstenite::tungstenite::Message;
@@ -47,37 +47,6 @@ pub struct PriceServiceConnectionConfig {
     price_feed_request_config: Option<PriceFeedRequestConfig>,
 }
 
-// #[derive(Serialize)]
-// enum ClientMessageType {
-//     Subscribe,
-//     Unsubscribe,
-// }
-
-// #[derive(Serialize)]
-// struct ClientMessage {
-//     r#type: ClientMessageType,
-//     ids: Vec<String>,
-//     verbose: Option<bool>,
-//     binary: Option<bool>,
-//     allow_out_of_order: Option<bool>,
-// }
-
-enum ServerResponseStatus {
-    Success,
-    Error,
-}
-
-struct ServerResponse {
-    r#type: String,
-    status: ServerResponseStatus,
-    error: Option<String>,
-}
-
-struct ServerPriceUpdate {
-    r#type: String,
-    price_feed: String,
-}
-
 #[derive(Debug, Deserialize)]
 pub struct VaaResponse {
     #[serde(rename = "publishTime")]
@@ -105,30 +74,42 @@ where
         endpoint: &str,
         config: Option<PriceServiceConnectionConfig>,
     ) -> Result<Self, PriceServiceError> {
-        let price_feed_request_config = if let Some(price_service_config) = config {
-            if let Some(config) = price_service_config.price_feed_request_config {
-                let verbose = match config.verbose {
-                    Some(config_verbose) => Some(config_verbose),
-                    None => price_service_config.verbose,
+        let price_feed_request_config: PriceFeedRequestConfig;
+        let timeout: Duration;
+
+        match config {
+            Some(ref price_service_config) => {
+                if let Some(ref config) = price_service_config.price_feed_request_config {
+                    let verbose = match config.verbose {
+                        Some(config_verbose) => Some(config_verbose),
+                        None => price_service_config.verbose,
+                    };
+
+                    price_feed_request_config = PriceFeedRequestConfig {
+                        binary: config.binary,
+                        verbose,
+                        allow_out_of_order: config.allow_out_of_order,
+                    }
+                } else {
+                    price_feed_request_config = PriceFeedRequestConfig {
+                        binary: None,
+                        verbose: price_service_config.verbose,
+                        allow_out_of_order: None,
+                    }
+                }
+
+                timeout = price_service_config
+                    .timeout
+                    .unwrap_or(Duration::from_millis(5000));
+            }
+            None => {
+                price_feed_request_config = PriceFeedRequestConfig {
+                    binary: None,
+                    verbose: None,
+                    allow_out_of_order: None,
                 };
 
-                PriceFeedRequestConfig {
-                    binary: config.binary,
-                    verbose,
-                    allow_out_of_order: config.allow_out_of_order,
-                }
-            } else {
-                PriceFeedRequestConfig {
-                    binary: None,
-                    verbose: price_service_config.verbose,
-                    allow_out_of_order: None,
-                }
-            }
-        } else {
-            PriceFeedRequestConfig {
-                binary: None,
-                verbose: None,
-                allow_out_of_order: None,
+                timeout = Duration::from_millis(5000);
             }
         };
 
@@ -145,8 +126,10 @@ where
             }
         };
 
+        let http_client = ClientBuilder::new().timeout(timeout).build()?;
+
         Ok(Self {
-            http_client: Client::new(),
+            http_client,
             base_url,
             price_feed_callbacks: HashMap::new(),
             ws_client: None,
