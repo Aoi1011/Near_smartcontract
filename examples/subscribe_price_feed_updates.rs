@@ -24,9 +24,10 @@ async fn main() {
         .await
         .expect("Failed to subscribe");
 
-    loop {
-        tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
-    }
+    tokio::time::sleep(tokio::time::Duration::from_millis(600000)).await;
 
-    // connection.unsu
+    connection
+        .unsubscribe_price_feed_updates(&price_ids)
+        .await
+        .expect("Failed to unsubscribe");
 }

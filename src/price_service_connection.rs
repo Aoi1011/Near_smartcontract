@@ -398,9 +398,21 @@ where
     /// Also, it won't throw any exception if given price ids are invalid or connection errors. Instead,
     /// it calls `connection.onWsError`. If you want to handle the errors you should set the
     /// `onWsError` function to your custom error handler.
-    pub async fn unsubscribe_price_feed_updates(&mut self, price_ids: &[&str], cb: Option<F>) {
+    pub async fn unsubscribe_price_feed_updates(
+        &mut self,
+        price_ids: &[&str],
+    ) -> Result<(), PriceServiceError> {
+        let price_id_inputs: Vec<PriceIdInput> = price_ids
+            .iter()
+            .map(|id| {
+                let id_bytes = hex::decode(id).expect("Decoding failed");
+                let id_input = id_bytes.try_into().expect("Incorrect length");
+                PriceIdInput(id_input)
+            })
+            .collect();
+
         let message = ClientMessage::Subscribe {
-            ids: new_price_ids,
+            ids: price_id_inputs.clone(),
             verbose: self.price_feed_request_config.verbose.unwrap_or(false),
             binary: self.price_feed_request_config.binary.unwrap_or(false),
             allow_out_of_order: self
@@ -417,6 +429,28 @@ where
             self.start_web_socket(tx, initial_message).await;
             let _ = rx.await;
         }
+
+        // let remove_price_ids = Vec::new();
+
+        for id in price_ids {
+            self.price_feed_callbacks.remove(&id.to_string());
+        }
+
+        if let Some(ref mut client) = self.ws_client {
+            let mut client = client.lock().await;
+            let client_message = ClientMessage::Unsubscribe {
+                ids: price_id_inputs,
+            };
+            let message = serde_json::to_string(&client_message)
+                .map_err(|e| PriceServiceError::NotJson(e.to_string()))?;
+            client.send(Message::Text(message)).await;
+        }
+
+        if self.price_feed_callbacks.is_empty() {
+            self.close_web_socket().await;
+        }
+
+        Ok(())
     }
 
     /// Starts connection websocket.
