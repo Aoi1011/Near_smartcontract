@@ -170,25 +170,44 @@ where
     async fn wait_for_maybe_ready_websocket(&mut self) {
         let mut waited_time = Duration::from_millis(0);
 
-        // let ws_client = self.ws_client.clone();
         if let Some(ws_client) = &self.ws_client {
-            let mut stream = ws_client.lock().await;
+            let mut ws_stream = ws_client.lock().await;
             log::info!("wait_for_maybe_ready: After locking ws_client");
 
-            if !stream.is_terminated() {
-                stream.close(None).await.unwrap();
-                return;
-            }
+            // if ws_stream.can_send() {
+            //     return;
+            // }
 
-            if waited_time > Duration::from_secs(5) {
-                stream.close(None).await.unwrap();
-                return;
-            } else {
+            while !ws_stream.is_terminated() && waited_time < Duration::from_secs(5) {
                 waited_time += Duration::from_millis(10);
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
+
+            // ws_stream.close(None).await.unwrap();
         }
     }
+
+    // async fn wait_for_maybe_ready_websocket(&mut self) {
+    //     let mut waited_time = Duration::from_millis(0);
+
+    //     // let ws_client = self.ws_client.clone();
+    //     if let Some(ws_client) = &self.ws_client {
+    //         let mut stream = ws_client.lock().await;
+
+    //         if !stream.is_terminated() {
+    //             stream.close(None).await.unwrap();
+    //             return;
+    //         }
+
+    //         if waited_time > Duration::from_secs(5) {
+    //             stream.close(None).await.unwrap();
+    //             return;
+    //         } else {
+    //             waited_time += Duration::from_millis(10);
+    //             tokio::time::sleep(Duration::from_millis(10)).await;
+    //         }
+    //     }
+    // }
 
     async fn handle_close(&mut self) {
         self.ws_client = None;
