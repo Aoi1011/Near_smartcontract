@@ -84,8 +84,6 @@ where
             None => {
                 log::info!("Creating Web Socket client");
 
-                // let ws_client = self.ws_client.clone();
-                // let mut client = ws_client.lock().await;
                 match connect_async(&self.endpoint).await {
                     Ok((ws_stream, _)) => {
                         self.ws_client = Some(Arc::new(TokioMutex::new(ws_stream)));
@@ -278,7 +276,8 @@ where
             }
         }
         ServerMessage::PriceUpdate { price_feed } => {
-            let id = String::from_utf8(price_feed.id.0.to_vec()).unwrap();
+            let id: String = hex::encode(price_feed.id.0);
+            // let id = String::from_utf8(price_feed.id.0.to_vec()).unwrap();
             let price_feed_callbacks = price_feed_callbacks.lock().await;
             match price_feed_callbacks.get(&id) {
                 Some(callbacks) => {

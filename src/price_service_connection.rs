@@ -327,28 +327,31 @@ where
         price_ids: &[&str],
         cb: F,
     ) -> Result<(), PriceServiceError> {
-        let price_ids: Vec<&str> = price_ids
-            .iter()
-            .map(|price_id| {
-                if price_id.starts_with("0x") {
-                    &price_id[2..]
-                } else {
-                    price_id
-                }
-            })
-            .collect();
+        // let price_ids: Vec<&str> = price_ids
+        //     .iter()
+        //     .map(|price_id| {
+        //         if price_id.starts_with("0x") {
+        //             &price_id[2..]
+        //         } else {
+        //             price_id
+        //         }
+        //     })
+        //     .collect();
 
         let mut new_price_ids = Vec::new();
 
         let callback = Arc::new(Mutex::new(cb));
-        for id in price_ids {
-            if !self.price_feed_callbacks.contains_key(id) {
+        for id in price_ids.iter() {
+            if !self.price_feed_callbacks.contains_key(*id) {
                 self.price_feed_callbacks.insert(id.to_string(), Vec::new());
-                let id_input: [u8; 32] = id.as_bytes()[0..32].try_into().unwrap();
+
+                let id_bytes = hex::decode(id).expect("Decoding failed");
+                let id_input = id_bytes.try_into().expect("Incorrect length");
+                // let id_input: [u8; 32] = id.as_bytes()[0..32].try_into().unwrap();
                 new_price_ids.push(PriceIdInput(id_input));
             }
 
-            let price_feed_callbacks = self.price_feed_callbacks.get_mut(id).unwrap();
+            let price_feed_callbacks = self.price_feed_callbacks.get_mut(*id).unwrap();
             price_feed_callbacks.push(callback.clone());
         }
 
