@@ -38,7 +38,9 @@ pub struct PriceServiceConnectionConfig {
     ///
     /// The connection uses exponential back-off for the delay between retries. However,
     /// it will timeout regardless of the retries at the configured `timeout` time.
-    http_retries: Option<u8>,
+    ///
+    /// In the future, will use retry: https://github.com/seanmonstar/reqwest/issues/799
+    _http_retries: Option<u8>,
 
     /// Deprecated: please use priceFeedRequestConfig.verbose instead
     verbose: Option<bool>,
