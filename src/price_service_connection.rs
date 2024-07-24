@@ -40,7 +40,7 @@ pub struct PriceServiceConnectionConfig {
     /// it will timeout regardless of the retries at the configured `timeout` time.
     ///
     /// In the future, will use retry: https://github.com/seanmonstar/reqwest/issues/799
-    _http_retries: Option<u8>,
+    // http_retries: Option<u8>,
 
     /// Deprecated: please use priceFeedRequestConfig.verbose instead
     verbose: Option<bool>,
@@ -52,8 +52,8 @@ pub struct PriceServiceConnectionConfig {
 #[derive(Debug, Deserialize)]
 pub struct VaaResponse {
     #[serde(rename = "publishTime")]
-    publish_time: i64,
-    vaa: String,
+    pub publish_time: i64,
+    pub vaa: String,
 }
 
 pub struct PriceServiceConnection<F>
@@ -312,17 +312,6 @@ where
         price_ids: &[&str],
         cb: F,
     ) -> Result<(), PriceServiceError> {
-        // let price_ids: Vec<&str> = price_ids
-        //     .iter()
-        //     .map(|price_id| {
-        //         if price_id.starts_with("0x") {
-        //             &price_id[2..]
-        //         } else {
-        //             price_id
-        //         }
-        //     })
-        //     .collect();
-
         let mut new_price_ids = Vec::new();
 
         let callback = Arc::new(Mutex::new(cb));
@@ -332,7 +321,6 @@ where
 
                 let id_bytes = hex::decode(id).expect("Decoding failed");
                 let id_input = id_bytes.try_into().expect("Incorrect length");
-                // let id_input: [u8; 32] = id.as_bytes()[0..32].try_into().unwrap();
                 new_price_ids.push(PriceIdInput(id_input));
             }
 
@@ -495,27 +483,11 @@ enum ClientMessage {
     Unsubscribe { ids: Vec<PriceIdInput> },
 }
 
-#[derive(Deserialize, Debug, Clone)]
-#[serde(tag = "type")]
-enum ServerMessage {
-    #[serde(rename = "response")]
-    Response(ServerResponseMessage),
-    #[serde(rename = "price_update")]
-    PriceUpdate { price_feed: RpcPriceFeed },
-}
-
-#[derive(Deserialize, Debug, Clone)]
-#[serde(tag = "status")]
-enum ServerResponseMessage {
-    #[serde(rename = "success")]
-    Success,
-    #[serde(rename = "error")]
-    Err { error: String },
-}
-
 #[cfg(test)]
 mod tests {
     use chrono::Duration;
+
+    use crate::types::RpcPriceIdentifier;
 
     use super::*;
 
@@ -546,7 +518,6 @@ mod tests {
     async fn test_get_price_feed_with_verbose_flag_works() {
         let price_service_connection_config = PriceServiceConnectionConfig {
             timeout: None,
-            http_retries: None,
             verbose: Some(true),
             price_feed_request_config: None,
         };
@@ -577,7 +548,6 @@ mod tests {
         };
         let price_service_connection_config = PriceServiceConnectionConfig {
             timeout: None,
-            http_retries: None,
             verbose: None,
             price_feed_request_config: Some(price_feed_request_config),
         };
@@ -608,7 +578,6 @@ mod tests {
         };
         let price_service_connection_config = PriceServiceConnectionConfig {
             timeout: None,
-            http_retries: None,
             verbose: None,
             price_feed_request_config: Some(price_feed_request_config),
         };
@@ -639,7 +608,6 @@ mod tests {
         };
         let price_service_connection_config = PriceServiceConnectionConfig {
             timeout: None,
-            http_retries: None,
             verbose: None,
             price_feed_request_config: Some(price_feed_request_config),
         };
@@ -703,17 +671,20 @@ mod tests {
                     *total_counter += 1;
                 });
             })
-            .await;
+            .await
+            .expect("Failed to subscribe price feed updates");
 
         tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
         connection.close_web_socket().await;
 
-        let total_counter = total_counter.clone();
         let total_counter = total_counter.lock().await;
         assert_eq!(*total_counter, 30);
 
-        // for id in ids {
-        //     assert!(counter.get(&id).is_some());
-        // }
+        let counter = counter.lock().await;
+        for id in ids {
+            let id_bytes = hex::decode(id).expect("Decoding failed");
+            let id_input = id_bytes.try_into().expect("Incorrect length");
+            assert!(counter.get(&RpcPriceIdentifier(id_input)).is_some());
+        }
     }
 }
